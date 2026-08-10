@@ -63,27 +63,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up a Towngas sensor from a config entry."""
-    config = entry.data
-    options = entry.options
-
-    coordinator = TowngasCoordinator(
-        hass=hass,
-        entry=entry,
-        subs_code=config[CONF_SUBS_CODE],
-        org_code=config[CONF_ORG_CODE],
-        host=config[CONF_HOST],
-        update_interval=options.get(
-            CONF_UPDATE_INTERVAL,
-            config.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL),
-        ),
-        flaresolverr_url=options.get(
-            CONF_FLARESOLVERR_URL,
-            config.get(CONF_FLARESOLVERR_URL, DEFAULT_FLARESOLVERR_URL),
-        ),
-    )
-
-    await coordinator.async_config_entry_first_refresh()
-    async_add_entities([TowngasSensor(coordinator, config)])
+    async_add_entities([TowngasSensor(entry.runtime_data, entry.data)])
 
 
 class TowngasCoordinator(DataUpdateCoordinator[dict[str, Any]]):

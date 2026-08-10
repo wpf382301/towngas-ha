@@ -12,6 +12,7 @@
 - 显式关联 `ConfigEntry`，兼容 Home Assistant 2026.8 之后的协调器要求；
 - 使用 `CoordinatorEntity` 和 `async_config_entry_first_refresh`；
 - 更新间隔限制为 5～1440 分钟，避免误设成高频请求；
+- 增加“立即更新余额”按钮，可随时手动刷新且不改变定时更新间隔；
 - 不再在 INFO 日志中输出用户号和燃气余额；
 - 增加 JSON、HTML `<pre>`、JSONP、直连及防爬回退测试。
 
@@ -38,6 +39,9 @@
 - `flaresolverr_url`：默认 `http://127.0.0.1:8191/v1`。
 
 默认更新间隔为 30 分钟。若数据变化不频繁，建议设置为 480 分钟。
+
+集成会在同一设备下创建“立即更新余额”按钮。点击后会马上执行一次余额
+查询；若直连遇到防爬，仍只为本次查询临时调用 FlareSolverr。
 
 ## FlareSolverr
 
