@@ -11,6 +11,12 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.selector import (
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
+)
 
 from .const import (
     CONF_FLARESOLVERR_URL,
@@ -26,7 +32,7 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 UPDATE_INTERVAL_VALIDATOR = vol.All(vol.Coerce(int), vol.Range(min=5, max=1440))
-URL_VALIDATOR = vol.All(str, vol.Url())
+URL_SELECTOR = TextSelector(TextSelectorConfig(type=TextSelectorType.URL))
 
 
 def load_org_list() -> list[dict[str, Any]]:
@@ -101,26 +107,37 @@ class TowngasConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if self.selected_org is None:
             return self.async_abort(reason="invalid_org")
 
+        errors: dict[str, str] = {}
         if user_input is not None:
-            unique_id = f"{user_input[CONF_SUBS_CODE]}_{self.selected_org['orgCode']}"
-            await self.async_set_unique_id(unique_id)
-            self._abort_if_unique_id_configured()
-
-            return self.async_create_entry(
-                title=(
-                    f"Towngas {self.selected_org.get('shortName', '')} "
-                    f"{user_input[CONF_SUBS_CODE]}"
-                ),
-                data={
-                    CONF_SUBS_CODE: user_input[CONF_SUBS_CODE],
-                    CONF_ORG_CODE: self.selected_org["orgCode"],
-                    CONF_HOST: self.selected_org["host"],
-                    CONF_UPDATE_INTERVAL: user_input[CONF_UPDATE_INTERVAL],
-                    CONF_FLARESOLVERR_URL: user_input.get(
-                        CONF_FLARESOLVERR_URL, DEFAULT_FLARESOLVERR_URL
-                    ),
-                },
+            flaresolverr_url = user_input.get(
+                CONF_FLARESOLVERR_URL, DEFAULT_FLARESOLVERR_URL
             )
+            try:
+                cv.url(flaresolverr_url)
+            except vol.Invalid:
+                errors[CONF_FLARESOLVERR_URL] = "invalid_url"
+
+            if not errors:
+                unique_id = (
+                    f"{user_input[CONF_SUBS_CODE]}_"
+                    f"{self.selected_org['orgCode']}"
+                )
+                await self.async_set_unique_id(unique_id)
+                self._abort_if_unique_id_configured()
+
+                return self.async_create_entry(
+                    title=(
+                        f"Towngas {self.selected_org.get('shortName', '')} "
+                        f"{user_input[CONF_SUBS_CODE]}"
+                    ),
+                    data={
+                        CONF_SUBS_CODE: user_input[CONF_SUBS_CODE],
+                        CONF_ORG_CODE: self.selected_org["orgCode"],
+                        CONF_HOST: self.selected_org["host"],
+                        CONF_UPDATE_INTERVAL: user_input[CONF_UPDATE_INTERVAL],
+                        CONF_FLARESOLVERR_URL: flaresolverr_url,
+                    },
+                )
 
         return self.async_show_form(
             step_id="account",
@@ -132,9 +149,10 @@ class TowngasConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     ): UPDATE_INTERVAL_VALIDATOR,
                     vol.Optional(
                         CONF_FLARESOLVERR_URL, default=DEFAULT_FLARESOLVERR_URL
-                    ): URL_VALIDATOR,
+                    ): URL_SELECTOR,
                 }
             ),
+            errors=errors,
         )
 
     @staticmethod
@@ -156,8 +174,14 @@ class TowngasOptionsFlowHandler(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Manage update and FlareSolverr options."""
+        errors: dict[str, str] = {}
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            try:
+                cv.url(user_input[CONF_FLARESOLVERR_URL])
+            except vol.Invalid:
+                errors[CONF_FLARESOLVERR_URL] = "invalid_url"
+            if not errors:
+                return self.async_create_entry(title="", data=user_input)
 
         return self.async_show_form(
             step_id="init",
@@ -180,7 +204,8 @@ class TowngasOptionsFlowHandler(config_entries.OptionsFlow):
                                 CONF_FLARESOLVERR_URL, DEFAULT_FLARESOLVERR_URL
                             ),
                         ),
-                    ): URL_VALIDATOR,
+                    ): URL_SELECTOR,
                 }
             ),
+            errors=errors,
         )
