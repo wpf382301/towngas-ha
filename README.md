@@ -1,24 +1,71 @@
-# 港华燃气Home Assistant集成
-通过Home Assistant获取港华燃气余额数据，代码由AI生成
+# 港华燃气 Home Assistant 集成（资源优化版）
 
-# 安装
-1. 通过HACS添加自定义仓库
-2. 搜索"Towngas" 
-3. 点击安装
-   
-# 使用
-选择燃气分公司，之后输入subsCode（用户号），配置中updatetime（更新间隔默认10分钟，单位分钟)
+本项目复刻自 [linyf0766/towngas-ha](https://github.com/linyf0766/towngas-ha)，
+用于在 Home Assistant 中读取港华燃气余额。
 
-<img width="879" height="589" alt="ScreenShot_2026-01-06_082825_840" src="https://github.com/user-attachments/assets/311e9f8d-1746-44fc-b635-fc5ff3bad2a1" />
+## 本版改进
 
-<img width="890" height="651" alt="ScreenShot_2026-01-06_082848_870" src="https://github.com/user-attachments/assets/028576fd-0ba6-4aae-a82a-8d8f11d9db8a" />
+- 每次更新先使用轻量 HTTP 请求，仅在遇到防爬页面时调用 FlareSolverr；
+- FlareSolverr 使用无会话请求，请求完成后自动关闭临时 Chromium；
+- 不再长期保存随机浏览器会话，避免 Home Assistant 重载后遗留进程；
+- 使用 Home Assistant 共享的 `aiohttp` 会话，减少连接和对象开销；
+- 显式关联 `ConfigEntry`，兼容 Home Assistant 2026.8 之后的协调器要求；
+- 使用 `CoordinatorEntity` 和 `async_config_entry_first_refresh`；
+- 更新间隔限制为 5～1440 分钟，避免误设成高频请求；
+- 不再在 INFO 日志中输出用户号和燃气余额；
+- 增加 JSON、HTML `<pre>`、JSONP、直连及防爬回退测试。
 
+## 安装
 
-# 获取用户号、区域码
-打开港华燃气网址：https://www.towngasvcc.com/
-选择自己的港华分公司，登录自己的燃气账号，打开业务办理>账单缴费，网址加载完后为：https://xxxxxx.towngasvcc.com/business/pay/owe/QYXXX/16XXXXX
-16XXXXX为用户号
+### HACS 自定义仓库
 
-# 关于部分地区防爬
-部分地区的服务器存在防爬机制，需要调用外部工具FlareSolverr才能正常获取到数据，已知地区：山东，其他地区自行测试
-FlareSolverr需自行部署
+1. 打开 HACS；
+2. 添加自定义仓库 `https://github.com/wpf382301/towngas-ha`；
+3. 类型选择“集成”；
+4. 安装“港华燃气”并重启 Home Assistant。
+
+### 手动安装
+
+将 `custom_components/towngas` 复制到 Home Assistant 的
+`/config/custom_components/towngas`，然后重启 Home Assistant。
+
+## 配置
+
+在 Home Assistant 中添加“港华燃气”，选择燃气公司并填写：
+
+- `subsCode`：用户号；
+- `updatetime`：更新间隔，单位为分钟；
+- `flaresolverr_url`：默认 `http://127.0.0.1:8191/v1`。
+
+默认更新间隔为 30 分钟。若数据变化不频繁，建议设置为 480 分钟。
+
+## FlareSolverr
+
+只有存在防爬的地区才需要 FlareSolverr。建议仅监听本机：
+
+```yaml
+ports:
+  - "127.0.0.1:8191:8191"
+```
+
+本集成不会创建永久会话。每次需要浏览器时发送一次 sessionless
+`request.get`，FlareSolverr 会在返回结果后销毁临时浏览器，因此空闲时不会
+长期保留港华燃气专用的 Chromium 进程。
+
+## 获取用户号
+
+打开 [港华燃气网上营业厅](https://www.towngasvcc.com/)，选择所属燃气公司，
+登录后进入“业务办理 → 账单缴费”。地址中的用户编号即为 `subsCode`。
+
+## 测试
+
+在包含 Home Assistant Python 环境的容器中执行：
+
+```sh
+python -m unittest discover -s tests -v
+```
+
+## 回退
+
+替换现有插件前请备份 `/config/custom_components/towngas`。如果升级后出现问题，
+恢复该目录并重启 Home Assistant 即可。
