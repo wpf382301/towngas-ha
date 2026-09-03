@@ -68,6 +68,14 @@ class TowngasRefreshErrorMessageTests(unittest.TestCase):
             "港华燃气余额更新失败：HTTP error status 503",
         )
 
+    def test_mini_program_auth_error_requests_new_capture(self) -> None:
+        message = refresh_error_message(
+            "Mini-program API error: 登录身份不一致,请重新登录 (code=9999)"
+        )
+        self.assertIn("API URL", message)
+        self.assertIn("accountid", message)
+        self.assertIn("Authorization", message)
+
     def test_missing_error_uses_fallback(self) -> None:
         self.assertIn("Home Assistant 日志", refresh_error_message(None))
 

@@ -21,6 +21,9 @@ from homeassistant.helpers.selector import (
 from .const import (
     CONF_FLARESOLVERR_URL,
     CONF_HOST,
+    CONF_MINI_ACCOUNT_ID,
+    CONF_MINI_API_TOKEN,
+    CONF_MINI_API_URL,
     CONF_ORG_CODE,
     CONF_SUBS_CODE,
     CONF_UPDATE_INTERVAL,
@@ -33,6 +36,46 @@ _LOGGER = logging.getLogger(__name__)
 
 UPDATE_INTERVAL_VALIDATOR = vol.All(vol.Coerce(int), vol.Range(min=5, max=1440))
 URL_SELECTOR = TextSelector(TextSelectorConfig(type=TextSelectorType.URL))
+PASSWORD_SELECTOR = TextSelector(
+    TextSelectorConfig(type=TextSelectorType.PASSWORD)
+)
+TEXT_SELECTOR = TextSelector(TextSelectorConfig())
+
+
+def validate_connection_options(
+    user_input: dict[str, Any], errors: dict[str, str]
+) -> dict[str, Any]:
+    """Normalize and validate legacy and mini-program connection options."""
+    normalized = dict(user_input)
+    for key in (
+        CONF_FLARESOLVERR_URL,
+        CONF_MINI_API_URL,
+        CONF_MINI_API_TOKEN,
+        CONF_MINI_ACCOUNT_ID,
+    ):
+        normalized[key] = str(normalized.get(key, "")).strip()
+
+    flaresolverr_url = normalized[CONF_FLARESOLVERR_URL]
+    try:
+        cv.url(flaresolverr_url)
+    except vol.Invalid:
+        errors[CONF_FLARESOLVERR_URL] = "invalid_url"
+
+    mini_values = (
+        normalized[CONF_MINI_API_URL],
+        normalized[CONF_MINI_API_TOKEN],
+        normalized[CONF_MINI_ACCOUNT_ID],
+    )
+    if any(mini_values):
+        if not all(mini_values):
+            errors["base"] = "mini_api_incomplete"
+        if normalized[CONF_MINI_API_URL]:
+            try:
+                cv.url(normalized[CONF_MINI_API_URL])
+            except vol.Invalid:
+                errors[CONF_MINI_API_URL] = "invalid_url"
+
+    return normalized
 
 
 def load_org_list() -> list[dict[str, Any]]:
@@ -109,13 +152,7 @@ class TowngasConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         errors: dict[str, str] = {}
         if user_input is not None:
-            flaresolverr_url = user_input.get(
-                CONF_FLARESOLVERR_URL, DEFAULT_FLARESOLVERR_URL
-            )
-            try:
-                cv.url(flaresolverr_url)
-            except vol.Invalid:
-                errors[CONF_FLARESOLVERR_URL] = "invalid_url"
+            user_input = validate_connection_options(user_input, errors)
 
             if not errors:
                 unique_id = (
@@ -135,7 +172,10 @@ class TowngasConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_ORG_CODE: self.selected_org["orgCode"],
                         CONF_HOST: self.selected_org["host"],
                         CONF_UPDATE_INTERVAL: user_input[CONF_UPDATE_INTERVAL],
-                        CONF_FLARESOLVERR_URL: flaresolverr_url,
+                        CONF_FLARESOLVERR_URL: user_input[CONF_FLARESOLVERR_URL],
+                        CONF_MINI_API_URL: user_input[CONF_MINI_API_URL],
+                        CONF_MINI_API_TOKEN: user_input[CONF_MINI_API_TOKEN],
+                        CONF_MINI_ACCOUNT_ID: user_input[CONF_MINI_ACCOUNT_ID],
                     },
                 )
 
@@ -150,6 +190,9 @@ class TowngasConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Optional(
                         CONF_FLARESOLVERR_URL, default=DEFAULT_FLARESOLVERR_URL
                     ): URL_SELECTOR,
+                    vol.Optional(CONF_MINI_API_URL, default=""): URL_SELECTOR,
+                    vol.Optional(CONF_MINI_ACCOUNT_ID, default=""): TEXT_SELECTOR,
+                    vol.Optional(CONF_MINI_API_TOKEN, default=""): PASSWORD_SELECTOR,
                 }
             ),
             errors=errors,
@@ -176,10 +219,7 @@ class TowngasOptionsFlowHandler(config_entries.OptionsFlow):
         """Manage update and FlareSolverr options."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            try:
-                cv.url(user_input[CONF_FLARESOLVERR_URL])
-            except vol.Invalid:
-                errors[CONF_FLARESOLVERR_URL] = "invalid_url"
+            user_input = validate_connection_options(user_input, errors)
             if not errors:
                 return self.async_create_entry(title="", data=user_input)
 
@@ -205,6 +245,27 @@ class TowngasOptionsFlowHandler(config_entries.OptionsFlow):
                             ),
                         ),
                     ): URL_SELECTOR,
+                    vol.Optional(
+                        CONF_MINI_API_URL,
+                        default=self._config_entry.options.get(
+                            CONF_MINI_API_URL,
+                            self._config_entry.data.get(CONF_MINI_API_URL, ""),
+                        ),
+                    ): URL_SELECTOR,
+                    vol.Optional(
+                        CONF_MINI_ACCOUNT_ID,
+                        default=self._config_entry.options.get(
+                            CONF_MINI_ACCOUNT_ID,
+                            self._config_entry.data.get(CONF_MINI_ACCOUNT_ID, ""),
+                        ),
+                    ): TEXT_SELECTOR,
+                    vol.Optional(
+                        CONF_MINI_API_TOKEN,
+                        default=self._config_entry.options.get(
+                            CONF_MINI_API_TOKEN,
+                            self._config_entry.data.get(CONF_MINI_API_TOKEN, ""),
+                        ),
+                    ): PASSWORD_SELECTOR,
                 }
             ),
             errors=errors,

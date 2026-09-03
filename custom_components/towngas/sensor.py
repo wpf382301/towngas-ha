@@ -30,6 +30,9 @@ from homeassistant.util import dt as dt_util
 from .const import (
     CONF_FLARESOLVERR_URL,
     CONF_HOST,
+    CONF_MINI_ACCOUNT_ID,
+    CONF_MINI_API_TOKEN,
+    CONF_MINI_API_URL,
     CONF_ORG_CODE,
     CONF_SUBS_CODE,
     CONF_UPDATE_INTERVAL,
@@ -42,6 +45,7 @@ _LOGGER = logging.getLogger(__name__)
 
 _DIRECT_TIMEOUT = aiohttp.ClientTimeout(total=20)
 _FLARESOLVERR_TIMEOUT = aiohttp.ClientTimeout(total=70)
+_MINI_API_TIMEOUT = aiohttp.ClientTimeout(total=30)
 
 BROWSER_HEADERS = {
     "User-Agent": (
@@ -57,8 +61,16 @@ BROWSER_HEADERS = {
 }
 
 
-class TowngasAccountNotBound(UpdateFailed):
+class TowngasRecoverableError(UpdateFailed):
+    """Raised when user action can restore Towngas updates."""
+
+
+class TowngasAccountNotBound(TowngasRecoverableError):
     """Raised when Towngas no longer has the configured account bound."""
+
+
+class TowngasMiniApiAuthenticationError(TowngasRecoverableError):
+    """Raised when the mini-program credentials need to be refreshed."""
 
 
 async def async_setup_entry(
@@ -82,12 +94,21 @@ class TowngasCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         host: str,
         update_interval: int,
         flaresolverr_url: str,
+        mini_api_url: str,
+        mini_api_token: str,
+        mini_account_id: str,
     ) -> None:
+        self._hass = hass
+        self._entry = entry
         self._subs_code = subs_code
         self._org_code = org_code
         self._host = host.rstrip("/")
+        self._update_interval_minutes = update_interval
         self._flaresolverr_url = (flaresolverr_url or "").rstrip("/")
         self._api_url = f"{self._host}/openapi/uv1/biz/checkRouters"
+        self._mini_api_url = (mini_api_url or "").strip()
+        self._mini_api_token = (mini_api_token or "").strip()
+        self._mini_account_id = str(mini_account_id or "").strip()
         self._http = async_get_clientsession(hass)
         self._last_used_flaresolverr = False
         self.last_error: str | None = None
@@ -99,6 +120,30 @@ class TowngasCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             config_entry=entry,
             name=f"{DOMAIN}_{subs_code}_{org_code}",
             update_interval=timedelta(minutes=update_interval),
+        )
+
+    def matches_config_entry(self, entry: ConfigEntry) -> bool:
+        """Return whether a config-entry update is already active in memory."""
+        config = entry.data
+        options = entry.options
+
+        def value(key: str, default: Any = "") -> Any:
+            return options.get(key, config.get(key, default))
+
+        return (
+            str(config.get(CONF_SUBS_CODE, "")) == self._subs_code
+            and str(config.get(CONF_ORG_CODE, "")) == self._org_code
+            and str(config.get(CONF_HOST, "")).rstrip("/") == self._host
+            and int(value(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL))
+            == self._update_interval_minutes
+            and str(
+                value(CONF_FLARESOLVERR_URL, DEFAULT_FLARESOLVERR_URL)
+            ).rstrip("/")
+            == self._flaresolverr_url
+            and str(value(CONF_MINI_API_URL)).strip() == self._mini_api_url
+            and str(value(CONF_MINI_API_TOKEN)).strip() == self._mini_api_token
+            and str(value(CONF_MINI_ACCOUNT_ID)).strip()
+            == self._mini_account_id
         )
 
     def _request_params(self) -> dict[str, str]:
@@ -126,6 +171,58 @@ class TowngasCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 response.headers.get("Content-Type", ""),
                 await response.text(),
             )
+
+    async def _mini_program_request(
+        self,
+    ) -> tuple[int, str, str, str | None, str | None]:
+        """Fetch account data from the authenticated mini-program API."""
+        headers = {
+            "Accept": "application/json",
+            "Authorization": self._mini_api_token,
+            "accountid": self._mini_account_id,
+            "User-Agent": BROWSER_HEADERS["User-Agent"],
+        }
+        async with self._http.get(
+            self._mini_api_url,
+            headers=headers,
+            timeout=_MINI_API_TIMEOUT,
+        ) as response:
+            return (
+                response.status,
+                response.headers.get("Content-Type", ""),
+                await response.text(),
+                response.headers.get("Authorization"),
+                response.headers.get("accountid"),
+            )
+
+    def _persist_mini_session(
+        self, authorization: str | None, account_id: str | None
+    ) -> None:
+        """Persist rotated mini-program credentials without logging them."""
+        new_token = (authorization or "").strip()
+        new_account_id = (account_id or "").strip()
+        token_changed = bool(new_token and new_token != self._mini_api_token)
+        account_changed = bool(
+            new_account_id and new_account_id != self._mini_account_id
+        )
+        if not token_changed and not account_changed:
+            return
+
+        data = dict(self._entry.data)
+        options = dict(self._entry.options)
+
+        if token_changed:
+            self._mini_api_token = new_token
+            target = options if CONF_MINI_API_TOKEN in options else data
+            target[CONF_MINI_API_TOKEN] = new_token
+        if account_changed:
+            self._mini_account_id = new_account_id
+            target = options if CONF_MINI_ACCOUNT_ID in options else data
+            target[CONF_MINI_ACCOUNT_ID] = new_account_id
+
+        self._hass.config_entries.async_update_entry(
+            self._entry, data=data, options=options
+        )
 
     def _build_flaresolverr_payload(self) -> dict[str, Any]:
         """Build a sessionless request so Chromium exits after every update."""
@@ -183,6 +280,9 @@ class TowngasCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch balance, using FlareSolverr only for the current update."""
         self._last_used_flaresolverr = False
+        if self._mini_api_url:
+            return await self._async_update_mini_program()
+
         direct_error: Exception | None = None
 
         try:
@@ -217,10 +317,35 @@ class TowngasCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.last_error = message
             raise UpdateFailed(message) from err
 
-    def _parse_response(
+    async def _async_update_mini_program(self) -> dict[str, Any]:
+        """Fetch balance through the authenticated mini-program API."""
+        if not self._mini_api_token or not self._mini_account_id:
+            error = TowngasMiniApiAuthenticationError(
+                "Mini-program API configuration is incomplete"
+            )
+            self.last_error = str(error)
+            raise error
+
+        try:
+            status, content_type, text, authorization, account_id = (
+                await self._mini_program_request()
+            )
+            result = self._parse_mini_response(status, content_type, text)
+            self._persist_mini_session(authorization, account_id)
+            self.last_error = None
+            return result
+        except TowngasRecoverableError as err:
+            self.last_error = str(err)
+            raise
+        except (TimeoutError, aiohttp.ClientError, ValueError, UpdateFailed) as err:
+            message = f"Mini-program API request failed: {err}"
+            self.last_error = message
+            raise UpdateFailed(message) from err
+
+    def _decode_response(
         self, status: int, content_type: str, text: str
     ) -> dict[str, Any]:
-        """Parse a JSON, JSONP, or JSON-in-HTML response."""
+        """Decode a JSON, JSONP, or JSON-in-HTML response."""
         if status >= 400:
             raise UpdateFailed(f"HTTP error status {status}")
 
@@ -248,7 +373,73 @@ class TowngasCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise UpdateFailed(f"Invalid JSON response: {err}") from err
 
         if not isinstance(data, dict):
-            raise UpdateFailed(f"Response is not a JSON object: {type(data).__name__}")
+            raise UpdateFailed(
+                f"Response is not a JSON object: {type(data).__name__}"
+            )
+        return data
+
+    def _parse_mini_response(
+        self, status: int, content_type: str, text: str
+    ) -> dict[str, Any]:
+        """Parse the account response returned by the mini-program API."""
+        if status in (401, 403):
+            raise TowngasMiniApiAuthenticationError(
+                f"Mini-program authentication failed (HTTP {status})"
+            )
+
+        data = self._decode_response(status, content_type, text)
+        code = data.get("code", 0)
+        if code not in (None, "", 0, "0"):
+            message = str(data.get("message", data.get("msg", "Unknown error")))
+            error = f"Mini-program API error: {message} (code={code})"
+            if any(word in message for word in ("登录", "身份", "令牌", "授权")):
+                raise TowngasMiniApiAuthenticationError(error)
+            raise UpdateFailed(error)
+
+        payload = data.get("data")
+        if not isinstance(payload, dict):
+            raise UpdateFailed("Mini-program response is missing data")
+
+        account = payload.get("data")
+        if not isinstance(account, dict):
+            account = payload
+        tci = payload.get("tci")
+        if not isinstance(tci, dict):
+            tci = account.get("tci") or payload.get("tci_account")
+        if not isinstance(tci, dict) or "presaving" not in tci:
+            raise UpdateFailed("Mini-program response is missing tci.presaving")
+
+        response_subs_code = account.get("account") or tci.get("userid")
+        if response_subs_code and str(response_subs_code) != self._subs_code:
+            raise UpdateFailed(
+                "Mini-program account does not match the configured subsCode"
+            )
+
+        try:
+            balance = float(str(tci["presaving"]).strip())
+        except (TypeError, ValueError) as err:
+            raise UpdateFailed("Mini-program presaving is not numeric") from err
+
+        result: dict[str, Any] = {
+            "savingSum": balance,
+            "data_source": "mini_program",
+        }
+        last_reading = payload.get("last")
+        if isinstance(last_reading, dict):
+            if last_reading.get("currreading") not in (None, ""):
+                result["meter_reading"] = last_reading["currreading"]
+            if last_reading.get("recorddate"):
+                result["meter_reading_date"] = last_reading["recorddate"]
+
+        self.last_updated = dt_util.utcnow()
+        _LOGGER.debug("Towngas balance updated successfully from mini-program API")
+        return result
+
+    def _parse_response(
+        self, status: int, content_type: str, text: str
+    ) -> dict[str, Any]:
+        """Parse a JSON, JSONP, or JSON-in-HTML response."""
+        data = self._decode_response(status, content_type, text)
 
         result_code = data.get("resultCode", data.get("result_code"))
         if result_code not in (None, "", 0, "0"):
@@ -271,7 +462,7 @@ class TowngasCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         self.last_updated = dt_util.utcnow()
         _LOGGER.debug("Towngas balance updated successfully")
-        return balance_data
+        return {**balance_data, "data_source": "legacy_web"}
 
 
 class TowngasSensor(CoordinatorEntity[TowngasCoordinator], SensorEntity):
@@ -316,4 +507,8 @@ class TowngasSensor(CoordinatorEntity[TowngasCoordinator], SensorEntity):
             attributes["last_error"] = self.coordinator.last_error
         if self.coordinator.last_updated:
             attributes["last_update"] = self.coordinator.last_updated.isoformat()
+        data = self.coordinator.data or {}
+        for key in ("data_source", "meter_reading", "meter_reading_date"):
+            if key in data:
+                attributes[key] = data[key]
         return attributes

@@ -19,6 +19,16 @@ _LOGGER = logging.getLogger(__name__)
 
 def refresh_error_message(error: str | None) -> str:
     """Return an actionable message for a failed manual refresh."""
+    if error and (
+        "Mini-program authentication failed" in error
+        or "Mini-program API configuration is incomplete" in error
+        or "登录身份" in error
+        or "令牌" in error
+    ):
+        return (
+            "港华小程序登录凭据无效或配置不完整。请重新抓取账户详情请求，"
+            "并在港华燃气集成选项中更新完整 API URL、accountid 和 Authorization"
+        )
     if error and ("resultCode=60151" in error or "未绑定此户号" in error):
         return (
             "港华返回“未绑定此户号”（60151）。请先在“泰安泰山港华燃气"
