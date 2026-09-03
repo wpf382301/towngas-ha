@@ -1,19 +1,21 @@
 """Sensor platform for the Towngas integration."""
 from __future__ import annotations
 
+import asyncio
 import html
 import json
 import logging
 import re
 from datetime import datetime, timedelta
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import aiohttp
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
+    SensorEntityDescription,
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
@@ -37,6 +39,7 @@ from .const import (
     CONF_SUBS_CODE,
     CONF_UPDATE_INTERVAL,
     DEFAULT_FLARESOLVERR_URL,
+    DEFAULT_MINI_API_URL,
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
 )
@@ -46,6 +49,32 @@ _LOGGER = logging.getLogger(__name__)
 _DIRECT_TIMEOUT = aiohttp.ClientTimeout(total=20)
 _FLARESOLVERR_TIMEOUT = aiohttp.ClientTimeout(total=70)
 _MINI_API_TIMEOUT = aiohttp.ClientTimeout(total=30)
+_MINI_API_ATTEMPTS = 3
+
+
+def _build_mini_api_urls(configured_url: str) -> tuple[str, str]:
+    """Build the account-detail and bill URLs from a base or captured URL."""
+    parsed = urlsplit((configured_url or DEFAULT_MINI_API_URL).strip())
+    path = parsed.path.rstrip("/")
+    if path.endswith("/detail"):
+        detail_path = path
+        bill_path = f"{path[:-len('/detail')]}/bill"
+    elif path.endswith("/bill"):
+        bill_path = path
+        detail_path = f"{path[:-len('/bill')]}/detail"
+    elif path.endswith("/api/gas"):
+        detail_path = f"{path}/detail"
+        bill_path = f"{path}/bill"
+    else:
+        detail_path = "/api/gas/detail"
+        bill_path = "/api/gas/bill"
+
+    def build(endpoint_path: str) -> str:
+        return urlunsplit(
+            (parsed.scheme, parsed.netloc, endpoint_path, "", "")
+        )
+
+    return build(detail_path), build(bill_path)
 
 BROWSER_HEADERS = {
     "User-Agent": (
@@ -59,6 +88,46 @@ BROWSER_HEADERS = {
     "Referer": "{host}/",
     "X-Requested-With": "XMLHttpRequest",
 }
+
+MINI_PROGRAM_SENSOR_DESCRIPTIONS = (
+    SensorEntityDescription(
+        key="meter_reading",
+        name="Towngas Meter Reading",
+        device_class=SensorDeviceClass.GAS,
+        native_unit_of_measurement="m³",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        icon="mdi:meter-gas",
+    ),
+    SensorEntityDescription(
+        key="latest_bill_month",
+        name="Towngas Latest Bill Month",
+        icon="mdi:calendar-month",
+    ),
+    SensorEntityDescription(
+        key="latest_bill_usage",
+        name="Towngas Latest Bill Usage",
+        device_class=SensorDeviceClass.GAS,
+        native_unit_of_measurement="m³",
+        state_class=SensorStateClass.TOTAL,
+        icon="mdi:fire",
+    ),
+    SensorEntityDescription(
+        key="latest_bill_charge",
+        name="Towngas Latest Bill Charge",
+        device_class=SensorDeviceClass.MONETARY,
+        native_unit_of_measurement="CNY",
+        state_class=SensorStateClass.TOTAL,
+        icon="mdi:receipt-text",
+    ),
+    SensorEntityDescription(
+        key="latest_bill_unpaid",
+        name="Towngas Latest Bill Unpaid",
+        device_class=SensorDeviceClass.MONETARY,
+        native_unit_of_measurement="CNY",
+        state_class=SensorStateClass.TOTAL,
+        icon="mdi:cash-clock",
+    ),
+)
 
 
 class TowngasRecoverableError(UpdateFailed):
@@ -78,8 +147,15 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up a Towngas sensor from a config entry."""
-    async_add_entities([TowngasSensor(entry.runtime_data, entry.data)])
+    """Set up Towngas sensors from a config entry."""
+    coordinator = entry.runtime_data
+    entities: list[SensorEntity] = [TowngasSensor(coordinator, entry.data)]
+    if coordinator.mini_program_enabled:
+        entities.extend(
+            TowngasMiniProgramSensor(coordinator, entry.data, description)
+            for description in MINI_PROGRAM_SENSOR_DESCRIPTIONS
+        )
+    async_add_entities(entities)
 
 
 class TowngasCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -107,6 +183,9 @@ class TowngasCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._flaresolverr_url = (flaresolverr_url or "").rstrip("/")
         self._api_url = f"{self._host}/openapi/uv1/biz/checkRouters"
         self._mini_api_url = (mini_api_url or "").strip()
+        self._mini_detail_url, self._mini_bill_url = _build_mini_api_urls(
+            self._mini_api_url
+        )
         self._mini_api_token = (mini_api_token or "").strip()
         self._mini_account_id = str(mini_account_id or "").strip()
         self._http = async_get_clientsession(hass)
@@ -121,6 +200,11 @@ class TowngasCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             name=f"{DOMAIN}_{subs_code}_{org_code}",
             update_interval=timedelta(minutes=update_interval),
         )
+
+    @property
+    def mini_program_enabled(self) -> bool:
+        """Return whether mini-program credentials are configured."""
+        return bool(self._mini_api_token or self._mini_account_id)
 
     def matches_config_entry(self, entry: ConfigEntry) -> bool:
         """Return whether a config-entry update is already active in memory."""
@@ -174,26 +258,68 @@ class TowngasCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _mini_program_request(
         self,
+        method: str,
+        url: str,
+        *,
+        params: dict[str, str] | None = None,
+        json_body: dict[str, Any] | None = None,
     ) -> tuple[int, str, str, str | None, str | None]:
-        """Fetch account data from the authenticated mini-program API."""
+        """Call the mini-program API with a bounded connection retry."""
         headers = {
-            "Accept": "application/json",
+            "Accept": "*/*",
             "Authorization": self._mini_api_token,
             "accountid": self._mini_account_id,
+            "Content-Type": "application/json",
             "User-Agent": BROWSER_HEADERS["User-Agent"],
+            "Referer": "https://servicewechat.com/",
+            "xweb_xhr": "1",
         }
-        async with self._http.get(
-            self._mini_api_url,
-            headers=headers,
-            timeout=_MINI_API_TIMEOUT,
-        ) as response:
-            return (
-                response.status,
-                response.headers.get("Content-Type", ""),
-                await response.text(),
-                response.headers.get("Authorization"),
-                response.headers.get("accountid"),
-            )
+        for attempt in range(_MINI_API_ATTEMPTS):
+            try:
+                async with self._http.request(
+                    method,
+                    url,
+                    params=params,
+                    json=json_body,
+                    headers=headers,
+                    timeout=_MINI_API_TIMEOUT,
+                ) as response:
+                    return (
+                        response.status,
+                        response.headers.get("Content-Type", ""),
+                        await response.text(),
+                        response.headers.get("Authorization"),
+                        response.headers.get("accountid"),
+                    )
+            except (TimeoutError, aiohttp.ClientConnectionError):
+                if attempt + 1 >= _MINI_API_ATTEMPTS:
+                    raise
+                await asyncio.sleep(2**attempt)
+
+        raise RuntimeError("Mini-program request retry loop exhausted")
+
+    async def _mini_program_detail_request(
+        self,
+    ) -> tuple[int, str, str, str | None, str | None]:
+        """Fetch the account detail used for the current balance."""
+        return await self._mini_program_request(
+            "GET",
+            self._mini_detail_url,
+            params={"id": self._mini_account_id},
+        )
+
+    async def _mini_program_bill_request(
+        self,
+    ) -> tuple[int, str, str, str | None, str | None]:
+        """Fetch up to twelve monthly bills for the configured account."""
+        account_id: int | str = self._mini_account_id
+        if self._mini_account_id.isdecimal():
+            account_id = int(self._mini_account_id)
+        return await self._mini_program_request(
+            "POST",
+            self._mini_bill_url,
+            json_body={"id": account_id, "page": 1, "page_size": 12},
+        )
 
     def _persist_mini_session(
         self, authorization: str | None, account_id: str | None
@@ -280,7 +406,7 @@ class TowngasCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch balance, using FlareSolverr only for the current update."""
         self._last_used_flaresolverr = False
-        if self._mini_api_url:
+        if self.mini_program_enabled:
             return await self._async_update_mini_program()
 
         direct_error: Exception | None = None
@@ -328,9 +454,17 @@ class TowngasCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         try:
             status, content_type, text, authorization, account_id = (
-                await self._mini_program_request()
+                await self._mini_program_detail_request()
             )
             result = self._parse_mini_response(status, content_type, text)
+            self._persist_mini_session(authorization, account_id)
+
+            status, content_type, text, authorization, account_id = (
+                await self._mini_program_bill_request()
+            )
+            result.update(
+                self._parse_mini_bill_response(status, content_type, text)
+            )
             self._persist_mini_session(authorization, account_id)
             self.last_error = None
             return result
@@ -427,12 +561,88 @@ class TowngasCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         last_reading = payload.get("last")
         if isinstance(last_reading, dict):
             if last_reading.get("currreading") not in (None, ""):
-                result["meter_reading"] = last_reading["currreading"]
+                try:
+                    result["meter_reading"] = float(
+                        str(last_reading["currreading"]).strip()
+                    )
+                except (TypeError, ValueError) as err:
+                    raise UpdateFailed(
+                        "Mini-program meter reading is not numeric"
+                    ) from err
             if last_reading.get("recorddate"):
                 result["meter_reading_date"] = last_reading["recorddate"]
 
         self.last_updated = dt_util.utcnow()
         _LOGGER.debug("Towngas balance updated successfully from mini-program API")
+        return result
+
+    def _parse_mini_bill_response(
+        self, status: int, content_type: str, text: str
+    ) -> dict[str, Any]:
+        """Parse the most recent record returned by the monthly bill API."""
+        if status in (401, 403):
+            raise TowngasMiniApiAuthenticationError(
+                f"Mini-program authentication failed (HTTP {status})"
+            )
+
+        data = self._decode_response(status, content_type, text)
+        code = data.get("code", 0)
+        if code not in (None, "", 0, "0"):
+            message = str(data.get("message", data.get("msg", "Unknown error")))
+            error = f"Mini-program bill API error: {message} (code={code})"
+            if any(word in message for word in ("登录", "身份", "令牌", "授权")):
+                raise TowngasMiniApiAuthenticationError(error)
+            raise UpdateFailed(error)
+
+        payload = data.get("data")
+        if not isinstance(payload, dict):
+            raise UpdateFailed("Mini-program bill response is missing data")
+        records = payload.get("data")
+        if not isinstance(records, list):
+            raise UpdateFailed("Mini-program bill response is missing bill records")
+
+        bills = [record for record in records if isinstance(record, dict)]
+        result: dict[str, Any] = {
+            "bill_count": payload.get("total", len(bills)),
+        }
+        if not bills:
+            return result
+
+        latest = max(bills, key=lambda record: str(record.get("yrmonth", "")))
+        response_subs_code = latest.get("userid")
+        if response_subs_code and str(response_subs_code) != self._subs_code:
+            raise UpdateFailed(
+                "Mini-program bill account does not match the configured subsCode"
+            )
+
+        period = str(latest.get("yrmonth", "")).strip()
+        if len(period) == 6 and period.isdecimal():
+            result["latest_bill_month"] = f"{period[:4]}-{period[4:]}"
+        elif period:
+            result["latest_bill_month"] = period
+
+        numeric_fields = {
+            "amount": "latest_bill_usage",
+            "price": "latest_bill_unit_price",
+            "chrgsum": "latest_bill_charge",
+            "paidsum": "latest_bill_paid",
+            "unpaidfee": "latest_bill_unpaid",
+            "lastreading": "latest_bill_previous_reading",
+            "currreading": "latest_bill_current_reading",
+        }
+        for source_key, result_key in numeric_fields.items():
+            value = latest.get(source_key)
+            if value in (None, ""):
+                continue
+            try:
+                result[result_key] = float(str(value).strip())
+            except (TypeError, ValueError) as err:
+                raise UpdateFailed(
+                    f"Mini-program bill field {source_key} is not numeric"
+                ) from err
+
+        if latest.get("issuedate"):
+            result["latest_bill_issue_date"] = str(latest["issuedate"])
         return result
 
     def _parse_response(
@@ -512,3 +722,57 @@ class TowngasSensor(CoordinatorEntity[TowngasCoordinator], SensorEntity):
             if key in data:
                 attributes[key] = data[key]
         return attributes
+
+
+class TowngasMiniProgramSensor(
+    CoordinatorEntity[TowngasCoordinator], SensorEntity
+):
+    """Expose a non-sensitive reading from the mini-program APIs."""
+
+    entity_description: SensorEntityDescription
+
+    def __init__(
+        self,
+        coordinator: TowngasCoordinator,
+        config: dict[str, Any],
+        description: SensorEntityDescription,
+    ) -> None:
+        super().__init__(coordinator)
+        self.entity_description = description
+        self._subs_code = config[CONF_SUBS_CODE]
+        self._org_code = config[CONF_ORG_CODE]
+        self._attr_name = description.name
+        self._attr_unique_id = (
+            f"towngas_{description.key}_{self._subs_code}_{self._org_code}"
+        )
+        self._attr_device_info = {
+            "identifiers": {
+                (
+                    DOMAIN,
+                    f"towngas_balance_{self._subs_code}_{self._org_code}",
+                )
+            },
+            "name": f"Towngas {self._subs_code}",
+            "manufacturer": "Towngas",
+            "configuration_url": config[CONF_HOST],
+        }
+
+    @property
+    def native_value(self) -> Any:
+        data = self.coordinator.data or {}
+        return data.get(self.entity_description.key)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        if self.entity_description.key != "latest_bill_charge":
+            return None
+        data = self.coordinator.data or {}
+        attribute_keys = (
+            "latest_bill_unit_price",
+            "latest_bill_paid",
+            "latest_bill_previous_reading",
+            "latest_bill_current_reading",
+            "latest_bill_issue_date",
+            "bill_count",
+        )
+        return {key: data[key] for key in attribute_keys if key in data}

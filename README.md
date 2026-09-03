@@ -23,6 +23,9 @@
   “泰安泰山港华燃气有限公司”微信公众号中重新绑定燃气账户。
 - 支持使用小程序抓包中的账户详情 API。余额读取 `data.tci.presaving`，响应头
   返回新 `Authorization` 时自动续存，不再依赖旧营业厅的账户绑定状态。
+- 自动调用 `/api/gas/bill` 获取月度账单，提供表读数、最新账单月份、用量、
+  费用和未缴金额传感器；账户详情 URL 由 `accountid` 自动生成。
+- 小程序请求遇到短暂连接中断时最多重试 3 次。
 - 小程序凭据不会写入日志或实体属性；返回的姓名、手机号、地址和证件信息也
   不会进入 Home Assistant 状态数据库。
 
@@ -47,7 +50,8 @@
 - `subsCode`：用户号；
 - `updatetime`：更新间隔，单位为分钟；
 - `flaresolverr_url`：默认 `http://127.0.0.1:8191/v1`。
-- `mini_api_url`：小程序账户详情请求的完整 URL；
+- `mini_api_url`：可选，小程序 API 地址；默认使用
+  `https://rqjf.jnyuxia.com`，也兼容抓包得到的账户详情完整 URL；
 - `mini_account_id`：该请求头中的 `accountid`；
 - `mini_api_token`：该请求头中的 `Authorization`。
 
@@ -56,10 +60,10 @@
 集成会在同一设备下创建“立即更新余额”按钮。点击后会马上执行一次余额
 查询；若直连遇到防爬，仍只为本次查询临时调用 FlareSolverr。
 
-小程序 API 的三个配置项必须全部填写或全部留空。配置后，集成只调用小程序
-账户详情接口并读取 `data.tci.presaving`，不再启动 FlareSolverr。服务端通常会在
-响应头中签发新的 `Authorization`，集成会自动保存它，以延长登录会话。由于完整
-URL 可能因小程序版本或地区变化，本集成不预设未经确认的接口路径。
+小程序 `accountid` 和 `Authorization` 必须同时填写或同时留空；API 地址可以留空。
+配置后，集成调用账户详情接口读取 `data.tci.presaving`，并调用月度账单接口读取
+最新一期账单，不再启动 FlareSolverr。服务端在任一响应头中签发新的
+`Authorization` 时，集成会自动保存并立即用于下一次请求。
 
 如果 Home Assistant 日志显示 `60151 / 未绑定此户号`，请先在“泰安泰山港华燃气有限公司”
 微信公众号中进入“客户服务 → 燃气缴费 → 选择账号关系”，重新输入燃气用户号并

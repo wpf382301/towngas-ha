@@ -9,12 +9,12 @@
       },
       "account": {
         "title": "配置燃气账户",
-        "description": "小程序 API 三项可留空以继续使用旧营业厅接口；启用时必须全部填写。",
+        "description": "小程序 accountid 和 Authorization 可留空以继续使用旧营业厅接口；启用后会获取余额、表读数和最新月度账单。",
         "data": {
           "subsCode": "燃气用户号",
           "updatetime": "更新间隔（分钟）",
           "flaresolverr_url": "FlareSolverr URL",
-          "mini_api_url": "小程序账户详情 API URL",
+          "mini_api_url": "小程序 API 地址（可选）",
           "mini_account_id": "小程序 accountid",
           "mini_api_token": "小程序 Authorization"
         }
@@ -22,7 +22,7 @@
     },
     "error": {
       "invalid_url": "URL 格式无效",
-      "mini_api_incomplete": "小程序 API URL、accountid 和 Authorization 必须全部填写或全部留空"
+      "mini_api_incomplete": "小程序 accountid 和 Authorization 必须同时填写或同时留空"
     },
     "abort": {
       "invalid_org": "燃气公司无效",
@@ -33,11 +33,11 @@
     "step": {
       "init": {
         "title": "港华燃气选项",
-        "description": "配置小程序 API 后将停止调用旧营业厅和 FlareSolverr。服务端返回的新 Authorization 会自动保存。",
+        "description": "配置小程序 accountid 和 Authorization 后将停止调用旧营业厅和 FlareSolverr，并获取余额、表读数和最新月度账单。服务端返回的新 Authorization 会自动保存。",
         "data": {
           "updatetime": "更新间隔（分钟）",
           "flaresolverr_url": "FlareSolverr URL",
-          "mini_api_url": "小程序账户详情 API URL",
+          "mini_api_url": "小程序 API 地址（可选）",
           "mini_account_id": "小程序 accountid",
           "mini_api_token": "小程序 Authorization"
         }
@@ -45,7 +45,7 @@
     },
     "error": {
       "invalid_url": "URL 格式无效",
-      "mini_api_incomplete": "小程序 API URL、accountid 和 Authorization 必须全部填写或全部留空"
+      "mini_api_incomplete": "小程序 accountid 和 Authorization 必须同时填写或同时留空"
     }
   }
 }

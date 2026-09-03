@@ -28,6 +28,7 @@ from .const import (
     CONF_SUBS_CODE,
     CONF_UPDATE_INTERVAL,
     DEFAULT_FLARESOLVERR_URL,
+    DEFAULT_MINI_API_URL,
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
 )
@@ -61,19 +62,20 @@ def validate_connection_options(
     except vol.Invalid:
         errors[CONF_FLARESOLVERR_URL] = "invalid_url"
 
-    mini_values = (
-        normalized[CONF_MINI_API_URL],
+    mini_credentials = (
         normalized[CONF_MINI_API_TOKEN],
         normalized[CONF_MINI_ACCOUNT_ID],
     )
-    if any(mini_values):
-        if not all(mini_values):
+    if any(mini_credentials):
+        if not all(mini_credentials):
             errors["base"] = "mini_api_incomplete"
-        if normalized[CONF_MINI_API_URL]:
-            try:
-                cv.url(normalized[CONF_MINI_API_URL])
-            except vol.Invalid:
-                errors[CONF_MINI_API_URL] = "invalid_url"
+        elif not normalized[CONF_MINI_API_URL]:
+            normalized[CONF_MINI_API_URL] = DEFAULT_MINI_API_URL
+    if normalized[CONF_MINI_API_URL]:
+        try:
+            cv.url(normalized[CONF_MINI_API_URL])
+        except vol.Invalid:
+            errors[CONF_MINI_API_URL] = "invalid_url"
 
     return normalized
 

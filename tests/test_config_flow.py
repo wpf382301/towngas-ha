@@ -21,6 +21,7 @@ from custom_components.towngas.const import (
     CONF_MINI_API_URL,
     CONF_UPDATE_INTERVAL,
     DEFAULT_FLARESOLVERR_URL,
+    DEFAULT_MINI_API_URL,
     DEFAULT_UPDATE_INTERVAL,
 )
 
@@ -81,13 +82,30 @@ class TowngasOptionsFlowTests(unittest.IsolatedAsyncioTestCase):
                 CONF_UPDATE_INTERVAL: DEFAULT_UPDATE_INTERVAL,
                 CONF_FLARESOLVERR_URL: DEFAULT_FLARESOLVERR_URL,
                 CONF_MINI_API_URL: "https://mini.example.invalid/account",
-                CONF_MINI_ACCOUNT_ID: "",
+                CONF_MINI_ACCOUNT_ID: "100",
                 CONF_MINI_API_TOKEN: "",
             }
         )
 
         self.assertEqual(result["type"], "form")
         self.assertEqual(result["errors"]["base"], "mini_api_incomplete")
+
+    async def test_options_default_mini_api_url(self) -> None:
+        entry = SimpleNamespace(options={}, data={})
+        flow = TowngasOptionsFlowHandler(entry)
+
+        result = await flow.async_step_init(
+            {
+                CONF_UPDATE_INTERVAL: DEFAULT_UPDATE_INTERVAL,
+                CONF_FLARESOLVERR_URL: DEFAULT_FLARESOLVERR_URL,
+                CONF_MINI_API_URL: "",
+                CONF_MINI_ACCOUNT_ID: "100",
+                CONF_MINI_API_TOKEN: "token",
+            }
+        )
+
+        self.assertEqual(result["type"], "create_entry")
+        self.assertEqual(result["data"][CONF_MINI_API_URL], DEFAULT_MINI_API_URL)
 
 if __name__ == "__main__":
     unittest.main()

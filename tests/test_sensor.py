@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
+
+import aiohttp
 
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
@@ -11,6 +13,7 @@ from custom_components.towngas.sensor import (
     TowngasAccountNotBound,
     TowngasCoordinator,
     TowngasMiniApiAuthenticationError,
+    _build_mini_api_urls,
 )
 
 
@@ -26,6 +29,9 @@ def make_coordinator() -> TowngasCoordinator:
     )
     coordinator._flaresolverr_url = "http://127.0.0.1:8191/v1"
     coordinator._mini_api_url = ""
+    coordinator._mini_detail_url, coordinator._mini_bill_url = (
+        _build_mini_api_urls("")
+    )
     coordinator._mini_api_token = ""
     coordinator._mini_account_id = ""
     coordinator._entry = SimpleNamespace(data={}, options={})
@@ -121,8 +127,50 @@ class TowngasParserTests(unittest.TestCase):
 
         self.assertEqual(result["savingSum"], 173.3)
         self.assertEqual(result["data_source"], "mini_program")
-        self.assertEqual(result["meter_reading"], "110")
+        self.assertEqual(result["meter_reading"], 110.0)
         self.assertEqual(result["meter_reading_date"], "2026-09-03")
+
+    def test_build_mini_urls_from_captured_detail_url(self) -> None:
+        detail_url, bill_url = _build_mini_api_urls(
+            "https://rqjf.jnyuxia.com/api/gas/detail?id=100"
+        )
+
+        self.assertEqual(
+            detail_url, "https://rqjf.jnyuxia.com/api/gas/detail"
+        )
+        self.assertEqual(bill_url, "https://rqjf.jnyuxia.com/api/gas/bill")
+
+    def test_parse_latest_monthly_bill(self) -> None:
+        coordinator = make_coordinator()
+        result = coordinator._parse_mini_bill_response(
+            200,
+            "application/json",
+            """{
+                "code": 0,
+                "data": {
+                    "data": [
+                        {"userid": "123456", "yrmonth": "202607",
+                         "amount": "16", "price": "2.97",
+                         "chrgsum": "47.52", "paidsum": "47.52",
+                         "unpaidfee": "0", "lastreading": "63",
+                         "currreading": "79", "issuedate": "2026-07-25"},
+                        {"userid": "123456", "yrmonth": "202608",
+                         "amount": "25", "price": "2.97",
+                         "chrgsum": "74.25", "paidsum": "74.25",
+                         "unpaidfee": "0", "lastreading": "79",
+                         "currreading": "104", "issuedate": "2026-08-25"}
+                    ],
+                    "total": 2
+                }
+            }""",
+        )
+
+        self.assertEqual(result["latest_bill_month"], "2026-08")
+        self.assertEqual(result["latest_bill_usage"], 25.0)
+        self.assertEqual(result["latest_bill_charge"], 74.25)
+        self.assertEqual(result["latest_bill_unpaid"], 0.0)
+        self.assertEqual(result["latest_bill_current_reading"], 104.0)
+        self.assertEqual(result["bill_count"], 2)
 
     def test_reject_mini_program_account_mismatch(self) -> None:
         coordinator = make_coordinator()
@@ -205,17 +253,30 @@ class TowngasUpdateTests(unittest.IsolatedAsyncioTestCase):
     async def test_mini_program_success_skips_legacy_requests(self) -> None:
         coordinator = make_coordinator()
         coordinator._mini_api_url = "https://mini.example.invalid/account"
+        coordinator._mini_detail_url = "https://mini.example.invalid/api/gas/detail"
+        coordinator._mini_bill_url = "https://mini.example.invalid/api/gas/bill"
         coordinator._mini_api_token = "current-token"
         coordinator._mini_account_id = "100"
         coordinator._mini_program_request = AsyncMock(
-            return_value=(
-                200,
-                "application/json",
-                '{"code":0,"data":{"data":{"account":"123456"},'
-                '"tci":{"presaving":"88.6"}}}',
-                "current-token",
-                "100",
-            )
+            side_effect=[
+                (
+                    200,
+                    "application/json",
+                    '{"code":0,"data":{"data":{"account":"123456"},'
+                    '"tci":{"presaving":"88.6"}}}',
+                    "current-token",
+                    "100",
+                ),
+                (
+                    200,
+                    "application/json",
+                    '{"code":0,"data":{"data":[{"userid":"123456",'
+                    '"yrmonth":"202608","amount":"25",'
+                    '"chrgsum":"74.25","unpaidfee":"0"}],"total":1}}',
+                    "current-token",
+                    "100",
+                ),
+            ]
         )
         coordinator._direct_request = AsyncMock()
         coordinator._flaresolverr_request = AsyncMock()
@@ -223,8 +284,45 @@ class TowngasUpdateTests(unittest.IsolatedAsyncioTestCase):
         result = await coordinator._async_update_data()
 
         self.assertEqual(result["savingSum"], 88.6)
+        self.assertEqual(result["latest_bill_usage"], 25.0)
+        self.assertEqual(coordinator._mini_program_request.await_count, 2)
         coordinator._direct_request.assert_not_awaited()
         coordinator._flaresolverr_request.assert_not_awaited()
+
+    @patch(
+        "custom_components.towngas.sensor.asyncio.sleep",
+        new_callable=AsyncMock,
+    )
+    async def test_mini_program_connection_error_is_retried(
+        self, sleep: AsyncMock
+    ) -> None:
+        coordinator = make_coordinator()
+
+        class Response:
+            status = 200
+            headers = {"Content-Type": "application/json"}
+
+            async def text(self) -> str:
+                return '{"code":0}'
+
+            async def __aenter__(self) -> "Response":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+        request = Mock(
+            side_effect=[aiohttp.ClientConnectionError("temporary"), Response()]
+        )
+        coordinator._http = SimpleNamespace(request=request)
+
+        status, _, _, _, _ = await coordinator._mini_program_request(
+            "GET", "https://mini.example.invalid/api/gas/detail"
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(request.call_count, 2)
+        sleep.assert_awaited_once_with(1)
 
     async def test_antibot_uses_temporary_fallback(self) -> None:
         coordinator = make_coordinator()
