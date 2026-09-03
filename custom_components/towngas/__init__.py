@@ -1,9 +1,12 @@
 """The Towngas integration."""
 from __future__ import annotations
 
+import logging
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
 
 from .const import (
     CONF_FLARESOLVERR_URL,
@@ -14,9 +17,10 @@ from .const import (
     DEFAULT_FLARESOLVERR_URL,
     DEFAULT_UPDATE_INTERVAL,
 )
-from .sensor import TowngasCoordinator
+from .sensor import TowngasAccountNotBound, TowngasCoordinator
 
 PLATFORMS = [Platform.SENSOR, Platform.BUTTON]
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -38,7 +42,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             config.get(CONF_FLARESOLVERR_URL, DEFAULT_FLARESOLVERR_URL),
         ),
     )
-    await coordinator.async_config_entry_first_refresh()
+    try:
+        await coordinator.async_config_entry_first_refresh()
+    except ConfigEntryNotReady as err:
+        if not isinstance(err.__cause__, TowngasAccountNotBound):
+            raise
+        _LOGGER.warning(
+            "Towngas account is not bound; loading entities in unavailable state "
+            "and waiting for the configured update interval or a manual refresh"
+        )
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True

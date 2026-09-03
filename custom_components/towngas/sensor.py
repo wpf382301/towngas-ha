@@ -57,6 +57,10 @@ BROWSER_HEADERS = {
 }
 
 
+class TowngasAccountNotBound(UpdateFailed):
+    """Raised when Towngas no longer has the configured account bound."""
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -86,6 +90,7 @@ class TowngasCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._api_url = f"{self._host}/openapi/uv1/biz/checkRouters"
         self._http = async_get_clientsession(hass)
         self._last_used_flaresolverr = False
+        self.last_error: str | None = None
         self.last_updated: datetime | None = None
 
         super().__init__(
@@ -184,7 +189,9 @@ class TowngasCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             status, content_type, text = await self._direct_request()
             if not self._looks_like_antibot(status, content_type):
                 try:
-                    return self._parse_response(status, content_type, text)
+                    result = self._parse_response(status, content_type, text)
+                    self.last_error = None
+                    return result
                 except UpdateFailed as err:
                     direct_error = err
                     _LOGGER.debug("Direct response could not be parsed; using fallback")
@@ -198,11 +205,16 @@ class TowngasCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             status, content_type, text = await self._flaresolverr_request()
             result = self._parse_response(status, content_type, text)
             self._last_used_flaresolverr = True
+            self.last_error = None
             return result
+        except TowngasAccountNotBound as err:
+            self.last_error = str(err)
+            raise
         except (TimeoutError, aiohttp.ClientError, ValueError, UpdateFailed) as err:
             message = f"FlareSolverr request failed: {err}"
             if direct_error is not None:
                 message += f"; direct request failed: {direct_error}"
+            self.last_error = message
             raise UpdateFailed(message) from err
 
     def _parse_response(
@@ -238,10 +250,19 @@ class TowngasCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not isinstance(data, dict):
             raise UpdateFailed(f"Response is not a JSON object: {type(data).__name__}")
 
-        if data.get("code", 0) != 0:
+        result_code = data.get("resultCode", data.get("result_code"))
+        if result_code not in (None, "", 0, "0"):
+            message = data.get("resultMsg", data.get("result_msg", "Unknown error"))
+            error = f"API error: {message} (resultCode={result_code})"
+            if str(result_code) == "60151":
+                raise TowngasAccountNotBound(error)
+            raise UpdateFailed(error)
+
+        code = data.get("code", 0)
+        if code not in (None, "", 0, "0"):
             raise UpdateFailed(
                 f"API error: {data.get('msg', data.get('message', 'Unknown error'))} "
-                f"(code={data['code']})"
+                f"(code={code})"
             )
 
         balance_data = data.get("data", data)
@@ -285,15 +306,14 @@ class TowngasSensor(CoordinatorEntity[TowngasCoordinator], SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
-        if self.coordinator.data is None:
-            return None
-
         attributes: dict[str, Any] = {
             "subs_code": self._subs_code,
             "org_code": self._org_code,
             "host": self._host,
             "using_flaresolverr": self.coordinator._last_used_flaresolverr,
         }
+        if self.coordinator.last_error:
+            attributes["last_error"] = self.coordinator.last_error
         if self.coordinator.last_updated:
             attributes["last_update"] = self.coordinator.last_updated.isoformat()
         return attributes

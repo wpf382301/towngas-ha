@@ -6,7 +6,10 @@ from unittest.mock import AsyncMock
 
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
-from custom_components.towngas.sensor import TowngasCoordinator
+from custom_components.towngas.sensor import (
+    TowngasAccountNotBound,
+    TowngasCoordinator,
+)
 
 
 def make_coordinator() -> TowngasCoordinator:
@@ -20,6 +23,7 @@ def make_coordinator() -> TowngasCoordinator:
     )
     coordinator._flaresolverr_url = "http://127.0.0.1:8191/v1"
     coordinator._last_used_flaresolverr = False
+    coordinator.last_error = None
     coordinator.last_updated = None
     return coordinator
 
@@ -59,6 +63,27 @@ class TowngasParserTests(unittest.TestCase):
         coordinator = make_coordinator()
         with self.assertRaises(UpdateFailed):
             coordinator._parse_response(200, "application/json", '{"code":0}')
+
+    def test_reject_account_not_bound_with_actionable_error(self) -> None:
+        coordinator = make_coordinator()
+        with self.assertRaisesRegex(
+            TowngasAccountNotBound,
+            r"未绑定此户号.*resultCode=60151",
+        ):
+            coordinator._parse_response(
+                200,
+                "application/json",
+                '{"resultCode":"60151","resultMsg":"未绑定此户号"}',
+            )
+
+    def test_accept_string_zero_code(self) -> None:
+        coordinator = make_coordinator()
+        result = coordinator._parse_response(
+            200,
+            "application/json",
+            '{"code":"0","data":{"savingSum":6.5}}',
+        )
+        self.assertEqual(result["savingSum"], 6.5)
 
     def test_flaresolverr_payload_is_sessionless(self) -> None:
         coordinator = make_coordinator()
@@ -112,6 +137,27 @@ class TowngasUpdateTests(unittest.IsolatedAsyncioTestCase):
         # pinning the coordinator to a browser session.
         await coordinator._async_update_data()
         self.assertEqual(coordinator._direct_request.await_count, 2)
+
+    async def test_account_not_bound_is_not_hidden_by_fallback_error(self) -> None:
+        coordinator = make_coordinator()
+        coordinator._direct_request = AsyncMock(
+            return_value=(202, "text/html", "<html>challenge</html>")
+        )
+        coordinator._flaresolverr_request = AsyncMock(
+            return_value=(
+                200,
+                "application/json",
+                '{"resultCode":"60151","resultMsg":"未绑定此户号"}',
+            )
+        )
+
+        with self.assertRaisesRegex(
+            TowngasAccountNotBound,
+            r"未绑定此户号.*resultCode=60151",
+        ):
+            await coordinator._async_update_data()
+
+        self.assertIn("未绑定此户号", coordinator.last_error)
 
 
 if __name__ == "__main__":
