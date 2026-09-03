@@ -1,6 +1,7 @@
 """Button platform for the Towngas integration."""
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from homeassistant.components.button import ButtonEntity
@@ -12,6 +13,20 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import CONF_HOST, CONF_ORG_CODE, CONF_SUBS_CODE, DOMAIN
 from .sensor import TowngasCoordinator
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def refresh_error_message(error: str | None) -> str:
+    """Return an actionable message for a failed manual refresh."""
+    if error and ("resultCode=60151" in error or "未绑定此户号" in error):
+        return (
+            "港华返回“未绑定此户号”（60151）。请先在“泰安泰山港华燃气"
+            "有限公司”微信公众号中重新绑定燃气账户，然后再更新余额"
+        )
+    if error:
+        return f"港华燃气余额更新失败：{error}"
+    return "港华燃气余额更新失败，请查看 Home Assistant 日志"
 
 
 async def async_setup_entry(
@@ -53,4 +68,6 @@ class TowngasRefreshButton(CoordinatorEntity[TowngasCoordinator], ButtonEntity):
         """Refresh the shared coordinator immediately."""
         await self.coordinator.async_request_refresh()
         if not self.coordinator.last_update_success:
-            raise HomeAssistantError("港华燃气余额更新失败，请查看 Home Assistant 日志")
+            error = self.coordinator.last_error
+            _LOGGER.warning("Manual Towngas balance refresh failed: %s", error)
+            raise HomeAssistantError(refresh_error_message(error))
