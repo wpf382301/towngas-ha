@@ -1,111 +1,65 @@
-"""Tests for the Towngas configuration schemas."""
+"""Tests for the current-only Towngas configuration schema."""
 from __future__ import annotations
 
 import unittest
-from types import SimpleNamespace
-
-import voluptuous as vol
-from voluptuous_serialize import convert
 
 from homeassistant.helpers import config_validation as cv
+from voluptuous_serialize import convert
 
-from custom_components.towngas.config_flow import (
-    PASSWORD_SELECTOR,
-    URL_SELECTOR,
-    TowngasOptionsFlowHandler,
-)
+from custom_components.towngas.config_flow import _schema, validate_connection_options
 from custom_components.towngas.const import (
-    CONF_FLARESOLVERR_URL,
-    CONF_MINI_ACCOUNT_ID,
-    CONF_MINI_API_TOKEN,
-    CONF_MINI_API_URL,
+    CONF_ACCOUNT_ID,
+    CONF_API_URL,
+    CONF_AUTHORIZATION,
     CONF_UPDATE_INTERVAL,
-    DEFAULT_FLARESOLVERR_URL,
-    DEFAULT_MINI_API_URL,
-    DEFAULT_UPDATE_INTERVAL,
 )
 
 
-class TowngasConfigSchemaTests(unittest.TestCase):
-    """Verify schemas are compatible with Home Assistant's frontend."""
+class TowngasConfigFlowTests(unittest.TestCase):
+    """Verify validation and frontend serialization."""
 
-    def test_url_validator_is_serializable(self) -> None:
-        schema = vol.Schema({vol.Optional("flaresolverr_url"): URL_SELECTOR})
+    def test_schema_contains_only_current_settings(self) -> None:
+        serialized = convert(_schema({}), custom_serializer=cv.custom_serializer)
 
-        serialized = convert(schema, custom_serializer=cv.custom_serializer)
-
-        self.assertEqual(len(serialized), 1)
-        self.assertIn("selector", serialized[0])
-
-    def test_password_selector_is_serializable(self) -> None:
-        schema = vol.Schema({vol.Optional("mini_api_token"): PASSWORD_SELECTOR})
-
-        serialized = convert(schema, custom_serializer=cv.custom_serializer)
-
-        self.assertEqual(len(serialized), 1)
         self.assertEqual(
-            serialized[0]["selector"]["text"]["type"], "password"
+            {field["name"] for field in serialized},
+            {CONF_API_URL, CONF_ACCOUNT_ID, CONF_AUTHORIZATION, CONF_UPDATE_INTERVAL},
+        )
+        self.assertEqual(
+            next(field for field in serialized if field["name"] == CONF_AUTHORIZATION)["selector"]["text"]["type"],
+            "password",
         )
 
-
-class TowngasOptionsFlowTests(unittest.IsolatedAsyncioTestCase):
-    """Test the actual options form that previously returned HTTP 500."""
-
-    async def test_options_form_schema_is_serializable(self) -> None:
-        entry = SimpleNamespace(
-            options={},
-            data={
-                CONF_UPDATE_INTERVAL: DEFAULT_UPDATE_INTERVAL,
-                CONF_FLARESOLVERR_URL: DEFAULT_FLARESOLVERR_URL,
-                CONF_MINI_API_URL: "",
-                CONF_MINI_ACCOUNT_ID: "",
-                CONF_MINI_API_TOKEN: "",
+    def test_captured_endpoint_is_normalized(self) -> None:
+        errors: dict[str, str] = {}
+        result = validate_connection_options(
+            {
+                CONF_API_URL: "https://rqjf.jnyuxia.com/api/gas/detail?id=25076",
+                CONF_ACCOUNT_ID: "25076",
+                CONF_AUTHORIZATION: "token",
+                CONF_UPDATE_INTERVAL: 30,
             },
-        )
-        flow = TowngasOptionsFlowHandler(entry)
-
-        result = await flow.async_step_init()
-        serialized = convert(
-            result["data_schema"], custom_serializer=cv.custom_serializer
+            errors,
         )
 
-        self.assertEqual(result["type"], "form")
-        self.assertEqual(len(serialized), 5)
-        self.assertTrue(any("selector" in field for field in serialized))
+        self.assertFalse(errors)
+        self.assertEqual(result[CONF_API_URL], "https://rqjf.jnyuxia.com")
 
-    async def test_options_reject_incomplete_mini_program_config(self) -> None:
-        entry = SimpleNamespace(options={}, data={})
-        flow = TowngasOptionsFlowHandler(entry)
-
-        result = await flow.async_step_init(
+    def test_credentials_are_required(self) -> None:
+        errors: dict[str, str] = {}
+        validate_connection_options(
             {
-                CONF_UPDATE_INTERVAL: DEFAULT_UPDATE_INTERVAL,
-                CONF_FLARESOLVERR_URL: DEFAULT_FLARESOLVERR_URL,
-                CONF_MINI_API_URL: "https://mini.example.invalid/account",
-                CONF_MINI_ACCOUNT_ID: "100",
-                CONF_MINI_API_TOKEN: "",
-            }
+                CONF_API_URL: "https://example.invalid",
+                CONF_ACCOUNT_ID: "",
+                CONF_AUTHORIZATION: "",
+                CONF_UPDATE_INTERVAL: 30,
+            },
+            errors,
         )
 
-        self.assertEqual(result["type"], "form")
-        self.assertEqual(result["errors"]["base"], "mini_api_incomplete")
+        self.assertEqual(errors[CONF_ACCOUNT_ID], "invalid_account_id")
+        self.assertEqual(errors[CONF_AUTHORIZATION], "authorization_required")
 
-    async def test_options_default_mini_api_url(self) -> None:
-        entry = SimpleNamespace(options={}, data={})
-        flow = TowngasOptionsFlowHandler(entry)
-
-        result = await flow.async_step_init(
-            {
-                CONF_UPDATE_INTERVAL: DEFAULT_UPDATE_INTERVAL,
-                CONF_FLARESOLVERR_URL: DEFAULT_FLARESOLVERR_URL,
-                CONF_MINI_API_URL: "",
-                CONF_MINI_ACCOUNT_ID: "100",
-                CONF_MINI_API_TOKEN: "token",
-            }
-        )
-
-        self.assertEqual(result["type"], "create_entry")
-        self.assertEqual(result["data"][CONF_MINI_API_URL], DEFAULT_MINI_API_URL)
 
 if __name__ == "__main__":
     unittest.main()

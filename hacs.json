@@ -1,6 +1,6 @@
 {
   "name": "港华燃气",
-  "domains": ["sensor"],
+  "domains": ["sensor", "button"],
   "homeassistant": "2025.6.0",
   "persistent_directory": "userfiles"
 }

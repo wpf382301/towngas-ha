@@ -1,8 +1,7 @@
-"""Button platform for the Towngas integration."""
+"""Button platform for Towngas."""
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
@@ -11,32 +10,19 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CONF_HOST, CONF_ORG_CODE, CONF_SUBS_CODE, DOMAIN
-from .sensor import TowngasCoordinator
+from .const import CONF_ACCOUNT_ID, DOMAIN
+from .coordinator import TowngasCoordinator, config_value
 
 _LOGGER = logging.getLogger(__name__)
 
 
 def refresh_error_message(error: str | None) -> str:
-    """Return an actionable message for a failed manual refresh."""
-    if error and (
-        "Mini-program authentication failed" in error
-        or "Mini-program API configuration is incomplete" in error
-        or "登录身份" in error
-        or "令牌" in error
-    ):
-        return (
-            "港华小程序登录凭据无效或配置不完整。请重新抓取账户详情请求，"
-            "并在港华燃气集成选项中更新完整 API URL、accountid 和 Authorization"
-        )
-    if error and ("resultCode=60151" in error or "未绑定此户号" in error):
-        return (
-            "港华返回“未绑定此户号”（60151）。请先在“泰安泰山港华燃气"
-            "有限公司”微信公众号中重新绑定燃气账户，然后再更新余额"
-        )
+    """Return an actionable error without exposing credentials."""
+    if error and ("authentication" in error.lower() or "登录" in error):
+        return "港华小程序 Authorization 已失效，请在集成选项中更新后重试"
     if error:
-        return f"港华燃气余额更新失败：{error}"
-    return "港华燃气余额更新失败，请查看 Home Assistant 日志"
+        return f"港华燃气数据同步失败：{error}"
+    return "港华燃气数据同步失败，请查看 Home Assistant 日志"
 
 
 async def async_setup_entry(
@@ -44,40 +30,36 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the Towngas manual-refresh button."""
-    async_add_entities([TowngasRefreshButton(entry.runtime_data, entry.data)])
+    """Set up the manual synchronization button."""
+    async_add_entities([TowngasRefreshButton(entry.runtime_data, entry)])
 
 
 class TowngasRefreshButton(CoordinatorEntity[TowngasCoordinator], ButtonEntity):
-    """Request an immediate Towngas balance refresh."""
+    """Synchronize details, bills and price tiers immediately."""
 
+    _attr_name = "立即同步燃气数据"
     _attr_icon = "mdi:refresh"
 
-    def __init__(self, coordinator: TowngasCoordinator, config: dict[str, Any]) -> None:
+    def __init__(self, coordinator: TowngasCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator)
-        subs_code = config[CONF_SUBS_CODE]
-        org_code = config[CONF_ORG_CODE]
-        host = config[CONF_HOST]
-        balance_unique_id = f"towngas_balance_{subs_code}_{org_code}"
-
-        self._attr_name = "立即更新余额"
-        self._attr_unique_id = f"towngas_refresh_{subs_code}_{org_code}"
+        account_id = str(config_value(entry, CONF_ACCOUNT_ID))
+        device_identifier = f"{DOMAIN}_{entry.entry_id}"
+        self._attr_unique_id = f"{device_identifier}_refresh"
         self._attr_device_info = {
-            "identifiers": {(DOMAIN, balance_unique_id)},
-            "name": f"Towngas Balance {subs_code}",
-            "manufacturer": "Towngas",
-            "configuration_url": host,
+            "identifiers": {(DOMAIN, device_identifier)},
+            "name": f"港华燃气 {account_id}",
+            "manufacturer": "港华燃气",
         }
 
     @property
     def available(self) -> bool:
-        """Keep the retry button available after a failed refresh."""
+        """Keep credential recovery available after a failed refresh."""
         return True
 
     async def async_press(self) -> None:
-        """Refresh the shared coordinator immediately."""
+        """Request an immediate full synchronization."""
         await self.coordinator.async_request_refresh()
         if not self.coordinator.last_update_success:
             error = self.coordinator.last_error
-            _LOGGER.warning("Manual Towngas balance refresh failed: %s", error)
+            _LOGGER.warning("Manual Towngas synchronization failed: %s", error)
             raise HomeAssistantError(refresh_error_message(error))

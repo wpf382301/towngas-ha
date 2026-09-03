@@ -2,50 +2,39 @@
   "config": {
     "step": {
       "user": {
-        "title": "选择燃气公司",
+        "title": "配置港华燃气",
+        "description": "填写小程序燃气详情请求中的 accountid 和 Authorization。每次更新会同步余额、当前读数、全部可用账单和阶梯价格。",
         "data": {
-          "org_code": "燃气公司"
-        }
-      },
-      "account": {
-        "title": "配置燃气账户",
-        "description": "小程序 accountid 和 Authorization 可留空以继续使用旧营业厅接口；启用后会获取余额、表读数和最新月度账单。",
-        "data": {
-          "subsCode": "燃气用户号",
-          "updatetime": "更新间隔（分钟）",
-          "flaresolverr_url": "FlareSolverr URL",
-          "mini_api_url": "小程序 API 地址（可选）",
-          "mini_account_id": "小程序 accountid",
-          "mini_api_token": "小程序 Authorization"
+          "api_url": "小程序 API 地址",
+          "account_id": "accountid",
+          "authorization": "Authorization",
+          "update_interval": "更新间隔（分钟）"
         }
       }
     },
     "error": {
       "invalid_url": "URL 格式无效",
-      "mini_api_incomplete": "小程序 accountid 和 Authorization 必须同时填写或同时留空"
-    },
-    "abort": {
-      "invalid_org": "燃气公司无效",
-      "no_orgs": "无法加载燃气公司列表"
+      "invalid_account_id": "accountid 必须是正整数",
+      "authorization_required": "Authorization 不能为空"
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "港华燃气选项",
-        "description": "配置小程序 accountid 和 Authorization 后将停止调用旧营业厅和 FlareSolverr，并获取余额、表读数和最新月度账单。服务端返回的新 Authorization 会自动保存。",
+        "description": "更新小程序连接信息。响应返回的新 Authorization 会自动保存并立即用于后续请求。",
         "data": {
-          "updatetime": "更新间隔（分钟）",
-          "flaresolverr_url": "FlareSolverr URL",
-          "mini_api_url": "小程序 API 地址（可选）",
-          "mini_account_id": "小程序 accountid",
-          "mini_api_token": "小程序 Authorization"
+          "api_url": "小程序 API 地址",
+          "account_id": "accountid",
+          "authorization": "Authorization",
+          "update_interval": "更新间隔（分钟）"
         }
       }
     },
     "error": {
       "invalid_url": "URL 格式无效",
-      "mini_api_incomplete": "小程序 accountid 和 Authorization 必须同时填写或同时留空"
+      "invalid_account_id": "accountid 必须是正整数",
+      "authorization_required": "Authorization 不能为空"
     }
   }
 }

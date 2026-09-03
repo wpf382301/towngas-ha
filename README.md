@@ -1,92 +1,56 @@
-# 港华燃气 Home Assistant 集成（资源优化版）
+# 港华燃气 Home Assistant 集成
 
-本项目复刻自 [linyf0766/towngas-ha](https://github.com/linyf0766/towngas-ha)，
-用于在 Home Assistant 中读取港华燃气余额。
+面向泰安泰山港华燃气小程序当前 API 的 Home Assistant 自定义集成。
 
-## 本版改进
+## 数据来源
 
-- 每次更新先使用轻量 HTTP 请求，仅在遇到防爬页面时调用 FlareSolverr；
-- FlareSolverr 使用无会话请求，请求完成后自动关闭临时 Chromium；
-- 不再长期保存随机浏览器会话，避免 Home Assistant 重载后遗留进程；
-- 使用 Home Assistant 共享的 `aiohttp` 会话，减少连接和对象开销；
-- 显式关联 `ConfigEntry`，兼容 Home Assistant 2026.8 之后的协调器要求；
-- 使用 `CoordinatorEntity` 和 `async_config_entry_first_refresh`；
-- 更新间隔限制为 5～1440 分钟，避免误设成高频请求；
-- 增加“立即更新余额”按钮，可随时手动刷新且不改变定时更新间隔；
-- 不再在 INFO 日志中输出用户号和燃气余额；
-- 增加 JSON、HTML `<pre>`、JSONP、直连及防爬回退测试。
-- 识别港华返回的业务错误码；户号解绑时显示真实的 `60151 / 未绑定此户号`，
-  不再误报为“缺少 savingSum”；
-- 户号解绑时仍加载实体和“立即更新余额”按钮，按配置的正常更新间隔重试，
-  避免 Home Assistant 每 10 分钟重新初始化集成并反复拉起 Chromium。
-- 手动更新失败时直接显示港华返回的具体原因；遇到 `60151` 时明确提示在
-  “泰安泰山港华燃气有限公司”微信公众号中重新绑定燃气账户。
-- 支持使用小程序抓包中的账户详情 API。余额读取 `data.tci.presaving`，响应头
-  返回新 `Authorization` 时自动续存，不再依赖旧营业厅的账户绑定状态。
-- 自动调用 `/api/gas/bill` 获取月度账单，提供表读数、最新账单月份、用量、
-  费用和未缴金额传感器；账户详情 URL 由 `accountid` 自动生成。
-- 小程序请求遇到短暂连接中断时最多重试 3 次。
-- 小程序凭据不会写入日志或实体属性；返回的姓名、手机号、地址和证件信息也
-  不会进入 Home Assistant 状态数据库。
+每次自动更新或点击“立即同步燃气数据”都会依次调用：
+
+- `GET /api/gas/detail`：余额和燃气表当前读数；
+- `POST /api/gas/bill`：分页获取月度账单；
+- `POST /api/gas/price`：年度阶梯价格和累计用量。
+
+旧网上营业厅接口、组织列表及 FlareSolverr 已从 3.0.0 起完全移除。
+
+服务端通过响应头续签 Authorization 时，集成会立即保存新值，下一项请求直接
+使用续签后的凭据。Authorization、姓名、地址、手机号和证件号不会进入日志、实体
+属性或历史文件。
+
+## 实体
+
+- 燃气余额；
+- 燃气表当前读数；
+- 本月用气量；
+- 本月预估燃气费；
+- 立即同步燃气数据按钮。
+
+本月用气量由“当前读数 - 最近已出账单的结束读数”得到。本月预估费用使用服务端
+返回的年度累计用量和完整阶梯价格分段计算，跨阶梯时分别计价。
+
+余额实体同时提供最近 24 个月账单、年度汇总、阶梯价格、当前阶梯和当前单价属性。
+所有已获取账单均使用 Home Assistant Store 按月份合并保存：新记录可以补充或更新
+同月账单，但不会因为服务端分页范围变化而删除旧月份。
 
 ## 安装
 
-### HACS 自定义仓库
+在 HACS 中添加自定义集成仓库：
 
-1. 打开 HACS；
-2. 添加自定义仓库 `https://github.com/wpf382301/towngas-ha`；
-3. 类型选择“集成”；
-4. 安装“港华燃气”并重启 Home Assistant。
+`https://github.com/wpf382301/towngas-ha`
 
-### 手动安装
-
-将 `custom_components/towngas` 复制到 Home Assistant 的
-`/config/custom_components/towngas`，然后重启 Home Assistant。
+安装后重启 Home Assistant，再从“设置 → 设备与服务 → 添加集成”中选择“港华燃气”。
 
 ## 配置
 
-在 Home Assistant 中添加“港华燃气”，选择燃气公司并填写：
+从小程序的账户详情请求中填写：
 
-- `subsCode`：用户号；
-- `updatetime`：更新间隔，单位为分钟；
-- `flaresolverr_url`：默认 `http://127.0.0.1:8191/v1`。
-- `mini_api_url`：可选，小程序 API 地址；默认使用
-  `https://rqjf.jnyuxia.com`，也兼容抓包得到的账户详情完整 URL；
-- `mini_account_id`：该请求头中的 `accountid`；
-- `mini_api_token`：该请求头中的 `Authorization`。
+- API 地址，默认 `https://rqjf.jnyuxia.com`；
+- `accountid`；
+- `Authorization`；
+- 更新间隔，默认 30 分钟，可设 5～1440 分钟。
 
-默认更新间隔为 30 分钟。若数据变化不频繁，建议设置为 480 分钟。
-
-集成会在同一设备下创建“立即更新余额”按钮。点击后会马上执行一次余额
-查询；若直连遇到防爬，仍只为本次查询临时调用 FlareSolverr。
-
-小程序 `accountid` 和 `Authorization` 必须同时填写或同时留空；API 地址可以留空。
-配置后，集成调用账户详情接口读取 `data.tci.presaving`，并调用月度账单接口读取
-最新一期账单，不再启动 FlareSolverr。服务端在任一响应头中签发新的
-`Authorization` 时，集成会自动保存并立即用于下一次请求。
-
-如果 Home Assistant 日志显示 `60151 / 未绑定此户号`，请先在“泰安泰山港华燃气有限公司”
-微信公众号中进入“客户服务 → 燃气缴费 → 选择账号关系”，重新输入燃气用户号并
-确认绑定，然后回到 Home Assistant 点击“立即更新余额”。这是港华服务端的账号关系
-状态，单纯重启 Home Assistant 或 FlareSolverr 无法重新建立绑定。
-
-## FlareSolverr
-
-只有存在防爬的地区才需要 FlareSolverr。建议仅监听本机：
-
-```yaml
-ports:
-  - "127.0.0.1:8191:8191"
-```
-
-本集成不会创建永久会话。每次需要浏览器时发送一次 sessionless
-`request.get`，FlareSolverr 会在返回结果后销毁临时浏览器，因此空闲时不会
-长期保留港华燃气专用的 Chromium 进程。
-
-## 获取用户号
-
-打开 [港华燃气网上营业厅](https://www.towngasvcc.com/)，选择所属燃气公司，
-登录后进入“业务办理 → 账单缴费”。地址中的用户编号即为 `subsCode`。
+2.x 配置会在升级后自动迁移，余额和当前读数的现有 entity_id 保持不变。旧的“最新
+账期、最新账单用量、最新账单费用、未缴费用”实体会移除，由余额实体历史属性和新的
+本月实体替代。
 
 ## 测试
 
@@ -95,8 +59,3 @@ ports:
 ```sh
 python -m unittest discover -s tests -v
 ```
-
-## 回退
-
-替换现有插件前请备份 `/config/custom_components/towngas`。如果升级后出现问题，
-恢复该目录并重启 Home Assistant 即可。

@@ -1,202 +1,121 @@
-"""Config flow for the Towngas integration."""
+"""Config flow for the Towngas mini-program API."""
 from __future__ import annotations
 
-import json
 import logging
-import os
 from typing import Any
+from urllib.parse import urlsplit
 
 import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
-from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.selector import (
     TextSelector,
     TextSelectorConfig,
     TextSelectorType,
 )
 
+from .api import normalize_api_url
 from .const import (
-    CONF_FLARESOLVERR_URL,
-    CONF_HOST,
-    CONF_MINI_ACCOUNT_ID,
-    CONF_MINI_API_TOKEN,
-    CONF_MINI_API_URL,
-    CONF_ORG_CODE,
-    CONF_SUBS_CODE,
+    CONF_ACCOUNT_ID,
+    CONF_API_URL,
+    CONF_AUTHORIZATION,
     CONF_UPDATE_INTERVAL,
-    DEFAULT_FLARESOLVERR_URL,
-    DEFAULT_MINI_API_URL,
+    DEFAULT_API_URL,
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
+    MAX_UPDATE_INTERVAL,
+    MIN_UPDATE_INTERVAL,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-UPDATE_INTERVAL_VALIDATOR = vol.All(vol.Coerce(int), vol.Range(min=5, max=1440))
-URL_SELECTOR = TextSelector(TextSelectorConfig(type=TextSelectorType.URL))
-PASSWORD_SELECTOR = TextSelector(
-    TextSelectorConfig(type=TextSelectorType.PASSWORD)
+UPDATE_INTERVAL_VALIDATOR = vol.All(
+    vol.Coerce(int), vol.Range(min=MIN_UPDATE_INTERVAL, max=MAX_UPDATE_INTERVAL)
 )
+URL_SELECTOR = TextSelector(TextSelectorConfig(type=TextSelectorType.URL))
+PASSWORD_SELECTOR = TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))
 TEXT_SELECTOR = TextSelector(TextSelectorConfig())
 
 
 def validate_connection_options(
     user_input: dict[str, Any], errors: dict[str, str]
 ) -> dict[str, Any]:
-    """Normalize and validate legacy and mini-program connection options."""
+    """Normalize and validate the current API configuration."""
     normalized = dict(user_input)
-    for key in (
-        CONF_FLARESOLVERR_URL,
-        CONF_MINI_API_URL,
-        CONF_MINI_API_TOKEN,
-        CONF_MINI_ACCOUNT_ID,
-    ):
-        normalized[key] = str(normalized.get(key, "")).strip()
-
-    flaresolverr_url = normalized[CONF_FLARESOLVERR_URL]
-    try:
-        cv.url(flaresolverr_url)
-    except vol.Invalid:
-        errors[CONF_FLARESOLVERR_URL] = "invalid_url"
-
-    mini_credentials = (
-        normalized[CONF_MINI_API_TOKEN],
-        normalized[CONF_MINI_ACCOUNT_ID],
+    normalized[CONF_API_URL] = normalize_api_url(
+        str(normalized.get(CONF_API_URL, DEFAULT_API_URL))
     )
-    if any(mini_credentials):
-        if not all(mini_credentials):
-            errors["base"] = "mini_api_incomplete"
-        elif not normalized[CONF_MINI_API_URL]:
-            normalized[CONF_MINI_API_URL] = DEFAULT_MINI_API_URL
-    if normalized[CONF_MINI_API_URL]:
-        try:
-            cv.url(normalized[CONF_MINI_API_URL])
-        except vol.Invalid:
-            errors[CONF_MINI_API_URL] = "invalid_url"
+    normalized[CONF_ACCOUNT_ID] = str(
+        normalized.get(CONF_ACCOUNT_ID, "")
+    ).strip()
+    normalized[CONF_AUTHORIZATION] = str(
+        normalized.get(CONF_AUTHORIZATION, "")
+    ).strip()
 
+    parsed = urlsplit(normalized[CONF_API_URL])
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        errors[CONF_API_URL] = "invalid_url"
+    if not normalized[CONF_ACCOUNT_ID].isdecimal() or int(
+        normalized[CONF_ACCOUNT_ID] or 0
+    ) <= 0:
+        errors[CONF_ACCOUNT_ID] = "invalid_account_id"
+    if not normalized[CONF_AUTHORIZATION]:
+        errors[CONF_AUTHORIZATION] = "authorization_required"
     return normalized
 
 
-def load_org_list() -> list[dict[str, Any]]:
-    """Load the organization list from the bundled JSON file."""
-    file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "orglist.json")
-    try:
-        with open(file_path, encoding="utf-8") as file:
-            data = json.load(file)
-    except (OSError, json.JSONDecodeError) as err:
-        _LOGGER.error("Failed to load organization list: %s", err)
-        return []
-
-    organizations = data.get("orgList", [])
-    return organizations if isinstance(organizations, list) else []
+def _schema(defaults: dict[str, Any]) -> vol.Schema:
+    return vol.Schema(
+        {
+            vol.Required(
+                CONF_API_URL, default=defaults.get(CONF_API_URL, DEFAULT_API_URL)
+            ): URL_SELECTOR,
+            vol.Required(
+                CONF_ACCOUNT_ID, default=defaults.get(CONF_ACCOUNT_ID, "")
+            ): TEXT_SELECTOR,
+            vol.Required(
+                CONF_AUTHORIZATION,
+                default=defaults.get(CONF_AUTHORIZATION, ""),
+            ): PASSWORD_SELECTOR,
+            vol.Required(
+                CONF_UPDATE_INTERVAL,
+                default=defaults.get(
+                    CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL
+                ),
+            ): UPDATE_INTERVAL_VALIDATOR,
+        }
+    )
 
 
 class TowngasConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a Towngas config flow."""
+    """Configure a Towngas account."""
 
-    VERSION = 1
+    VERSION = 2
     CONNECTION_CLASS = config_entries.CONN_CLASS_CLOUD_POLL
-
-    def __init__(self) -> None:
-        self.org_list: list[dict[str, Any]] = []
-        self.selected_org: dict[str, Any] | None = None
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Select the Towngas organization."""
+        """Create a current-API-only config entry."""
         errors: dict[str, str] = {}
-
-        if not self.org_list:
-            self.org_list = await self.hass.async_add_executor_job(load_org_list)
-            if not self.org_list:
-                return self.async_abort(reason="no_orgs")
-
         if user_input is not None:
-            self.selected_org = next(
-                (
-                    organization
-                    for organization in self.org_list
-                    if organization.get("orgCode") == user_input["org_code"]
-                ),
-                None,
-            )
-            if self.selected_org is not None:
-                return await self.async_step_account()
-            errors["base"] = "invalid_org"
-
-        organization_options = {
-            organization["orgCode"]: (
-                f"{organization.get('shortName', organization.get('orgName', '未知'))} "
-                f"({organization.get('desc', '')})"
-            )
-            for organization in self.org_list
-            if organization.get("orgCode")
-        }
+            normalized = validate_connection_options(user_input, errors)
+            if not errors:
+                await self.async_set_unique_id(
+                    f"{DOMAIN}_{normalized[CONF_ACCOUNT_ID]}"
+                )
+                self._abort_if_unique_id_configured()
+                return self.async_create_entry(
+                    title=f"港华燃气 {normalized[CONF_ACCOUNT_ID]}",
+                    data=normalized,
+                )
+            user_input = normalized
 
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(
-                {vol.Required("org_code"): vol.In(organization_options)}
-            ),
-            errors=errors,
-        )
-
-    async def async_step_account(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Configure the account and fallback service."""
-        if self.selected_org is None:
-            return self.async_abort(reason="invalid_org")
-
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            user_input = validate_connection_options(user_input, errors)
-
-            if not errors:
-                unique_id = (
-                    f"{user_input[CONF_SUBS_CODE]}_"
-                    f"{self.selected_org['orgCode']}"
-                )
-                await self.async_set_unique_id(unique_id)
-                self._abort_if_unique_id_configured()
-
-                return self.async_create_entry(
-                    title=(
-                        f"Towngas {self.selected_org.get('shortName', '')} "
-                        f"{user_input[CONF_SUBS_CODE]}"
-                    ),
-                    data={
-                        CONF_SUBS_CODE: user_input[CONF_SUBS_CODE],
-                        CONF_ORG_CODE: self.selected_org["orgCode"],
-                        CONF_HOST: self.selected_org["host"],
-                        CONF_UPDATE_INTERVAL: user_input[CONF_UPDATE_INTERVAL],
-                        CONF_FLARESOLVERR_URL: user_input[CONF_FLARESOLVERR_URL],
-                        CONF_MINI_API_URL: user_input[CONF_MINI_API_URL],
-                        CONF_MINI_API_TOKEN: user_input[CONF_MINI_API_TOKEN],
-                        CONF_MINI_ACCOUNT_ID: user_input[CONF_MINI_ACCOUNT_ID],
-                    },
-                )
-
-        return self.async_show_form(
-            step_id="account",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_SUBS_CODE): str,
-                    vol.Optional(
-                        CONF_UPDATE_INTERVAL, default=DEFAULT_UPDATE_INTERVAL
-                    ): UPDATE_INTERVAL_VALIDATOR,
-                    vol.Optional(
-                        CONF_FLARESOLVERR_URL, default=DEFAULT_FLARESOLVERR_URL
-                    ): URL_SELECTOR,
-                    vol.Optional(CONF_MINI_API_URL, default=""): URL_SELECTOR,
-                    vol.Optional(CONF_MINI_ACCOUNT_ID, default=""): TEXT_SELECTOR,
-                    vol.Optional(CONF_MINI_API_TOKEN, default=""): PASSWORD_SELECTOR,
-                }
-            ),
+            data_schema=_schema(user_input or {}),
             errors=errors,
         )
 
@@ -210,7 +129,7 @@ class TowngasConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class TowngasOptionsFlowHandler(config_entries.OptionsFlow):
-    """Handle Towngas options."""
+    """Update API credentials and refresh interval."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         self._config_entry = config_entry
@@ -218,57 +137,18 @@ class TowngasOptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Manage update and FlareSolverr options."""
+        """Show current API options."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            user_input = validate_connection_options(user_input, errors)
+            normalized = validate_connection_options(user_input, errors)
             if not errors:
-                return self.async_create_entry(title="", data=user_input)
+                return self.async_create_entry(title="", data=normalized)
+            user_input = normalized
 
+        defaults = dict(self._config_entry.data)
+        defaults.update(self._config_entry.options)
+        if user_input is not None:
+            defaults.update(user_input)
         return self.async_show_form(
-            step_id="init",
-            data_schema=vol.Schema(
-                {
-                    vol.Optional(
-                        CONF_UPDATE_INTERVAL,
-                        default=self._config_entry.options.get(
-                            CONF_UPDATE_INTERVAL,
-                            self._config_entry.data.get(
-                                CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL
-                            ),
-                        ),
-                    ): UPDATE_INTERVAL_VALIDATOR,
-                    vol.Optional(
-                        CONF_FLARESOLVERR_URL,
-                        default=self._config_entry.options.get(
-                            CONF_FLARESOLVERR_URL,
-                            self._config_entry.data.get(
-                                CONF_FLARESOLVERR_URL, DEFAULT_FLARESOLVERR_URL
-                            ),
-                        ),
-                    ): URL_SELECTOR,
-                    vol.Optional(
-                        CONF_MINI_API_URL,
-                        default=self._config_entry.options.get(
-                            CONF_MINI_API_URL,
-                            self._config_entry.data.get(CONF_MINI_API_URL, ""),
-                        ),
-                    ): URL_SELECTOR,
-                    vol.Optional(
-                        CONF_MINI_ACCOUNT_ID,
-                        default=self._config_entry.options.get(
-                            CONF_MINI_ACCOUNT_ID,
-                            self._config_entry.data.get(CONF_MINI_ACCOUNT_ID, ""),
-                        ),
-                    ): TEXT_SELECTOR,
-                    vol.Optional(
-                        CONF_MINI_API_TOKEN,
-                        default=self._config_entry.options.get(
-                            CONF_MINI_API_TOKEN,
-                            self._config_entry.data.get(CONF_MINI_API_TOKEN, ""),
-                        ),
-                    ): PASSWORD_SELECTOR,
-                }
-            ),
-            errors=errors,
+            step_id="init", data_schema=_schema(defaults), errors=errors
         )

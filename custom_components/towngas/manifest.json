@@ -1,7 +1,7 @@
 {
   "domain": "towngas",
   "name": "港华燃气",
-  "version": "2.4.0",
+  "version": "3.0.0",
   "documentation": "https://github.com/wpf382301/towngas-ha",
   "issue_tracker": "https://github.com/wpf382301/towngas-ha/issues",
   "codeowners": ["@wpf382301"],
