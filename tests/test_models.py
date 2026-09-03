@@ -1,13 +1,11 @@
 """Tests for Towngas payload sanitizing and tariff calculation."""
 from __future__ import annotations
 
-from decimal import Decimal
 import unittest
 
 from custom_components.towngas.models import (
     TowngasDataError,
     build_snapshot,
-    calculate_tiered_cost,
     parse_bills,
     parse_detail,
     parse_price,
@@ -87,7 +85,7 @@ class TowngasModelTests(unittest.TestCase):
         self.assertEqual(bills[0]["end_reading"], 104.0)
         self.assertNotIn("userid", bills[0])
 
-    def test_price_and_current_month_estimate(self) -> None:
+    def test_price_and_current_month_usage(self) -> None:
         detail = parse_detail(DETAIL_PAYLOAD, "25076")
         bills = parse_bills(BILL_RECORDS, detail["customer_number"])
         tiers, annual_usage = parse_price(PRICE_PAYLOAD)
@@ -97,19 +95,11 @@ class TowngasModelTests(unittest.TestCase):
         )
 
         self.assertEqual(snapshot["current_month_usage"], 6.0)
-        self.assertEqual(snapshot["current_month_estimated_cost"], 17.82)
+        self.assertNotIn("current_month_estimated_cost", snapshot)
         self.assertEqual(snapshot["current_tier"], 1)
-        self.assertTrue(snapshot["monthlist"][0]["estimated"])
-        self.assertEqual(snapshot["monthlist"][0]["month"], "2026-09")
-        self.assertEqual(snapshot["yearlist"][0]["yearEleNum"], 47.0)
-
-    def test_cost_crosses_tier_boundary(self) -> None:
-        tiers, _ = parse_price(PRICE_PAYLOAD)
-
-        previous = calculate_tiered_cost(230, tiers)
-        current = calculate_tiered_cost(250, tiers)
-
-        self.assertEqual(current - previous, Decimal("64.90"))
+        self.assertEqual(snapshot["monthlist"][0]["month"], "2026-08")
+        self.assertEqual(snapshot["yearlist"][0]["yearEleNum"], 41.0)
+        self.assertNotIn("estimated", snapshot["monthlist"][0])
 
     def test_invalid_tier_gap_is_rejected(self) -> None:
         broken = {**PRICE_PAYLOAD, "price": [dict(item) for item in PRICE_PAYLOAD["price"]]}

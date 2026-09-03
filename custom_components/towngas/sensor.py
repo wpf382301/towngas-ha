@@ -54,15 +54,6 @@ SENSORS = (
         state_class=SensorStateClass.TOTAL,
         icon="mdi:fire",
     ),
-    TowngasSensorDescription(
-        key="current_month_estimated_cost",
-        data_key="current_month_estimated_cost",
-        name="本月预估燃气费",
-        device_class=SensorDeviceClass.MONETARY,
-        native_unit_of_measurement="CNY",
-        state_class=SensorStateClass.TOTAL,
-        icon="mdi:calculator-variant",
-    ),
 )
 
 
@@ -117,7 +108,6 @@ class TowngasSensor(CoordinatorEntity[TowngasCoordinator], SensorEntity):
             "meter_reading_date",
             "current_month",
             "current_month_usage",
-            "current_month_estimated_cost",
             "annual_usage",
             "current_tier",
             "current_unit_price",

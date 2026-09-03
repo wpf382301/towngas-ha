@@ -1,4 +1,4 @@
-"""Sanitize Towngas payloads and calculate gas usage and charges."""
+"""Sanitize Towngas payloads and build entity-ready history."""
 from __future__ import annotations
 
 from collections import defaultdict
@@ -139,24 +139,6 @@ def parse_price(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], float]:
     return tiers, _number(_decimal(payload.get("use"), "price.use"))
 
 
-def calculate_tiered_cost(
-    usage: float | Decimal, tiers: list[dict[str, Any]]
-) -> Decimal:
-    """Calculate cumulative tiered cost, including boundary crossings."""
-    total_usage = max(Decimal("0"), Decimal(str(usage)))
-    cost = Decimal("0")
-    for tier in tiers:
-        minimum = Decimal(str(tier["min_usage"]))
-        maximum_value = tier.get("max_usage")
-        maximum = (
-            total_usage if maximum_value is None else Decimal(str(maximum_value))
-        )
-        billable = min(total_usage, maximum) - minimum
-        if billable > 0:
-            cost += billable * Decimal(str(tier["unit_price"]))
-    return cost.quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
-
-
 def current_tier(usage: float, tiers: list[dict[str, Any]]) -> dict[str, Any]:
     """Return the tier reached by the cumulative annual usage."""
     value = Decimal(str(usage))
@@ -198,7 +180,6 @@ def build_snapshot(
     sorted_bills = sorted(bills, key=lambda item: item["month"], reverse=True)
     latest = sorted_bills[0] if sorted_bills else None
     month_usage: float | None = None
-    month_cost: float | None = None
     meter_reset_detected = False
     if latest is not None:
         raw_usage = Decimal(str(detail["meter_reading"])) - Decimal(
@@ -208,11 +189,6 @@ def build_snapshot(
             meter_reset_detected = True
             raw_usage = Decimal("0")
         month_usage = _number(raw_usage)
-        start_usage = max(Decimal("0"), Decimal(str(annual_usage)) - raw_usage)
-        month_cost = _money(
-            calculate_tiered_cost(annual_usage, tiers)
-            - calculate_tiered_cost(start_usage, tiers)
-        )
 
     active_tier = current_tier(annual_usage, tiers)
     monthly_history = [dict(item) for item in sorted_bills]
@@ -223,24 +199,9 @@ def build_snapshot(
             "monthEleCost": item["charge"],
             "f_gas_total": item["usage"],
             "e_gas_total": item["charge"],
-            "estimated": False,
         }
         for item in sorted_bills
     ]
-    if month_usage is not None and current_month not in {
-        item["month"] for item in sorted_bills
-    }:
-        compatibility_months.insert(
-            0,
-            {
-                "month": current_month,
-                "monthEleNum": month_usage,
-                "monthEleCost": month_cost,
-                "f_gas_total": month_usage,
-                "e_gas_total": month_cost,
-                "estimated": True,
-            },
-        )
 
     compatibility_year_source = [
         {
@@ -273,7 +234,6 @@ def build_snapshot(
         **detail,
         "current_month": current_month,
         "current_month_usage": month_usage,
-        "current_month_estimated_cost": month_cost,
         "meter_reset_detected": meter_reset_detected,
         "annual_usage": annual_usage,
         "current_tier": active_tier["tier"],
