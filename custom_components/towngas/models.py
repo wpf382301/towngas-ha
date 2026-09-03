@@ -149,6 +149,43 @@ def current_tier(usage: float, tiers: list[dict[str, Any]]) -> dict[str, Any]:
     return tiers[-1]
 
 
+def estimate_current_month_charge(
+    annual_usage: float | None,
+    month_usage: float | None,
+    tiers: list[dict[str, Any]],
+) -> float | None:
+    """Estimate the current month's charge across annual tier boundaries.
+
+    ``annual_usage`` includes the current month.  The current month's starting
+    cumulative usage is therefore ``annual_usage - month_usage``.  Each
+    overlapping portion is charged at the corresponding annual tier price.
+    """
+    if annual_usage is None or month_usage is None or not tiers:
+        return None
+
+    end = Decimal(str(annual_usage))
+    usage = Decimal(str(month_usage))
+    if end < 0 or usage <= 0:
+        return None if usage < 0 else 0.0
+
+    start = end - usage
+    if start < 0:
+        start = Decimal("0")
+
+    charge = Decimal("0")
+    for tier in sorted(tiers, key=lambda item: item["min_usage"]):
+        minimum = Decimal(str(tier["min_usage"]))
+        raw_maximum = tier.get("max_usage")
+        maximum = None if raw_maximum is None else Decimal(str(raw_maximum))
+        upper = end if maximum is None else min(end, maximum)
+        lower = max(start, minimum)
+        if upper > lower:
+            amount = upper - lower
+            charge += amount * Decimal(str(tier["unit_price"]))
+
+    return _money(charge)
+
+
 def _yearly_history(months: list[dict[str, Any]]) -> list[dict[str, Any]]:
     totals: dict[str, dict[str, Decimal | int]] = defaultdict(
         lambda: {"usage": Decimal("0"), "charge": Decimal("0"), "months": 0}
@@ -191,6 +228,11 @@ def build_snapshot(
         month_usage = _number(raw_usage)
 
     active_tier = current_tier(annual_usage, tiers)
+    estimated_cost = estimate_current_month_charge(
+        annual_usage,
+        month_usage,
+        tiers,
+    )
     monthly_history = [dict(item) for item in sorted_bills]
     compatibility_months = [
         {
@@ -234,6 +276,7 @@ def build_snapshot(
         **detail,
         "current_month": current_month,
         "current_month_usage": month_usage,
+        "current_month_estimated_cost": estimated_cost,
         "meter_reset_detected": meter_reset_detected,
         "annual_usage": annual_usage,
         "current_tier": active_tier["tier"],

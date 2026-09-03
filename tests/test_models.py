@@ -6,6 +6,7 @@ import unittest
 from custom_components.towngas.models import (
     TowngasDataError,
     build_snapshot,
+    estimate_current_month_charge,
     parse_bills,
     parse_detail,
     parse_price,
@@ -95,11 +96,26 @@ class TowngasModelTests(unittest.TestCase):
         )
 
         self.assertEqual(snapshot["current_month_usage"], 6.0)
-        self.assertNotIn("current_month_estimated_cost", snapshot)
+        self.assertEqual(snapshot["current_month_estimated_cost"], 17.82)
         self.assertEqual(snapshot["current_tier"], 1)
         self.assertEqual(snapshot["monthlist"][0]["month"], "2026-08")
         self.assertEqual(snapshot["yearlist"][0]["yearEleNum"], 41.0)
         self.assertNotIn("estimated", snapshot["monthlist"][0])
+
+    def test_estimate_crosses_tier_boundary(self) -> None:
+        tiers, _ = parse_price(PRICE_PAYLOAD)
+
+        self.assertEqual(
+            estimate_current_month_charge(245, 10, tiers),
+            32.45,
+        )
+
+    def test_estimate_rejects_missing_or_negative_usage(self) -> None:
+        tiers, _ = parse_price(PRICE_PAYLOAD)
+
+        self.assertIsNone(estimate_current_month_charge(None, 1, tiers))
+        self.assertEqual(estimate_current_month_charge(10, 0, tiers), 0.0)
+        self.assertIsNone(estimate_current_month_charge(10, -1, tiers))
 
     def test_invalid_tier_gap_is_rejected(self) -> None:
         broken = {**PRICE_PAYLOAD, "price": [dict(item) for item in PRICE_PAYLOAD["price"]]}
