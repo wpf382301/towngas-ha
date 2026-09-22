@@ -141,9 +141,13 @@ class TowngasApiClient:
                     try:
                         body = await response.json(content_type=None)
                     except (ValueError, aiohttp.ContentTypeError) as err:
-                        raise TowngasApiError(
+                        last_error = TowngasApiError(
                             f"{endpoint} returned invalid JSON"
-                        ) from err
+                        )
+                        if attempt + 1 < REQUEST_ATTEMPTS:
+                            await asyncio.sleep(2**attempt)
+                            continue
+                        raise last_error from err
                     self._rotate_session(
                         response.headers.get("Authorization"),
                         response.headers.get("accountid"),
