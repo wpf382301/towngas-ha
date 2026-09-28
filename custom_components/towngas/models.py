@@ -219,9 +219,17 @@ def build_snapshot(
     month_usage: float | None = None
     meter_reset_detected = False
     if latest is not None:
-        raw_usage = Decimal(str(detail["meter_reading"])) - Decimal(
-            str(latest["end_reading"])
-        )
+        meter_reading = Decimal(str(detail["meter_reading"]))
+        latest_end_reading = Decimal(str(latest["end_reading"]))
+        # When a bill for the current month already exists, the meter
+        # difference from that bill is only the unbilled remainder. The
+        # complete month usage must include the billed amount as well.
+        if latest["month"] == current_month:
+            raw_usage = Decimal(str(latest["usage"])) + (
+                meter_reading - latest_end_reading
+            )
+        else:
+            raw_usage = meter_reading - latest_end_reading
         if raw_usage < 0:
             meter_reset_detected = True
             raw_usage = Decimal("0")

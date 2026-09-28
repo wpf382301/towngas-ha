@@ -102,6 +102,37 @@ class TowngasModelTests(unittest.TestCase):
         self.assertEqual(snapshot["yearlist"][0]["yearEleNum"], 41.0)
         self.assertNotIn("estimated", snapshot["monthlist"][0])
 
+    def test_current_month_bill_usage_includes_billed_and_unbilled_gas(self) -> None:
+        detail = parse_detail(
+            {
+                **DETAIL_PAYLOAD,
+                "last": {"currreading": "117", "recorddate": "2026-09-28"},
+            },
+            "25076",
+        )
+        bills = parse_bills(
+            [
+                {
+                    "userid": "1800342286",
+                    "yrmonth": "202609",
+                    "lastreading": "104",
+                    "currreading": "117",
+                    "amount": "12",
+                    "price": "2.97",
+                    "chrgsum": "35.64",
+                    "paidsum": "38.61",
+                    "unpaidfee": "0",
+                }
+            ],
+            detail["customer_number"],
+        )
+        tiers, annual_usage = parse_price({**PRICE_PAYLOAD, "use": "12"})
+
+        snapshot = build_snapshot(detail, bills, tiers, annual_usage, "2026-09")
+
+        self.assertEqual(snapshot["current_month_usage"], 12.0)
+        self.assertEqual(snapshot["current_month_estimated_cost"], 35.64)
+
     def test_estimate_crosses_tier_boundary(self) -> None:
         tiers, _ = parse_price(PRICE_PAYLOAD)
 
