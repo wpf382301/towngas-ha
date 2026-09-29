@@ -107,7 +107,7 @@ def parse_bills(
 
 
 def parse_price(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], float]:
-    """Normalize annual tier boundaries, prices and cumulative usage."""
+    """Normalize annual tiers and the API's reported usage field."""
     raw_tiers = payload.get("price")
     if not isinstance(raw_tiers, list) or not raw_tiers:
         raise TowngasDataError("price response is missing tiers")
@@ -221,19 +221,31 @@ def build_snapshot(
     if latest is not None:
         meter_reading = Decimal(str(detail["meter_reading"]))
         latest_end_reading = Decimal(str(latest["end_reading"]))
+        unbilled_usage = meter_reading - latest_end_reading
+        if unbilled_usage < 0:
+            meter_reset_detected = True
+            unbilled_usage = Decimal("0")
         # When a bill for the current month already exists, the meter
         # difference from that bill is only the unbilled remainder. The
         # complete month usage must include the billed amount as well.
         if latest["month"] == current_month:
-            raw_usage = Decimal(str(latest["usage"])) + (
-                meter_reading - latest_end_reading
-            )
+            raw_usage = Decimal(str(latest["usage"])) + unbilled_usage
         else:
-            raw_usage = meter_reading - latest_end_reading
-        if raw_usage < 0:
-            meter_reset_detected = True
-            raw_usage = Decimal("0")
+            raw_usage = unbilled_usage
         month_usage = _number(raw_usage)
+
+        # price.use can reset after billing, so it is not a reliable annual
+        # total. Count this year's bills and the unbilled meter difference
+        # once; the current month's billed amount is already in the history.
+        billed_this_year = sum(
+            (
+                Decimal(str(bill["usage"]))
+                for bill in sorted_bills
+                if bill["month"][:4] == current_month[:4]
+            ),
+            Decimal("0"),
+        )
+        annual_usage = _number(billed_this_year + unbilled_usage)
 
     active_tier = current_tier(annual_usage, tiers)
     estimated_cost = estimate_current_month_charge(

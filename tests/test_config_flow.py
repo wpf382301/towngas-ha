@@ -4,7 +4,10 @@ from __future__ import annotations
 import unittest
 
 from homeassistant.helpers import config_validation as cv
-from voluptuous_serialize import convert
+try:
+    from homeassistant.helpers.config_validation import to_field_list as convert
+except ImportError:  # Older Home Assistant versions use this serializer.
+    from voluptuous_serialize import convert
 
 from custom_components.towngas.config_flow import _schema, validate_connection_options
 from custom_components.towngas.const import (

@@ -141,6 +141,77 @@ class TowngasModelTests(unittest.TestCase):
             32.45,
         )
 
+    def test_annual_usage_uses_bills_and_unbilled_meter_difference(self) -> None:
+        tiers, reported_usage = parse_price({**PRICE_PAYLOAD, "use": "2"})
+        usages = [0, 1, 0, 23, 21, 18, 16, 25, 12]
+        bills = [
+            {
+                "month": f"2026-{month:02d}",
+                "usage": usage,
+                "charge": round(usage * 2.97, 2),
+                "end_reading": 117,
+            }
+            for month, usage in enumerate(usages, start=1)
+        ]
+        bills.append(
+            {"month": "2025-12", "usage": 80, "charge": 237.6, "end_reading": 0}
+        )
+
+        for meter, annual, monthly, estimate in (
+            (117, 116, 12, 35.64),
+            (118, 117, 13, 38.61),
+        ):
+            with self.subTest(meter=meter):
+                snapshot = build_snapshot(
+                    {"meter_reading": meter}, bills, tiers, reported_usage, "2026-09"
+                )
+                self.assertEqual(snapshot["annual_usage"], annual)
+                self.assertEqual(snapshot["计费标准"]["年阶梯累计用气量"], annual)
+                self.assertEqual(snapshot["current_month_usage"], monthly)
+                self.assertEqual(snapshot["current_month_estimated_cost"], estimate)
+                self.assertEqual(snapshot["yearly_history"][0]["usage"], 116)
+                self.assertEqual(snapshot["yearly_history"][0]["charge"], 344.52)
+                self.assertEqual(snapshot["monthlist"][0]["monthEleCost"], 35.64)
+
+    def test_new_year_does_not_include_previous_year_billed_usage(self) -> None:
+        tiers, _ = parse_price(PRICE_PAYLOAD)
+        snapshot = build_snapshot(
+            {"meter_reading": 503},
+            [{"month": "2026-12", "usage": 50, "charge": 148.5, "end_reading": 500}],
+            tiers,
+            500,
+            "2027-01",
+        )
+        self.assertEqual(snapshot["annual_usage"], 3)
+        self.assertEqual(snapshot["current_month_usage"], 3)
+        self.assertEqual(snapshot["current_month_estimated_cost"], 8.91)
+
+    def test_corrected_annual_usage_drives_tier_and_month_estimate(self) -> None:
+        tiers, _ = parse_price(PRICE_PAYLOAD)
+        snapshot = build_snapshot(
+            {"meter_reading": 249},
+            [{"month": "2026-08", "usage": 239, "charge": 709.83, "end_reading": 239}],
+            tiers,
+            2,
+            "2026-09",
+        )
+        self.assertEqual(snapshot["annual_usage"], 249)
+        self.assertEqual(snapshot["current_tier"], 2)
+        self.assertEqual(snapshot["current_month_estimated_cost"], 34.65)
+
+    def test_meter_reset_does_not_subtract_already_billed_usage(self) -> None:
+        tiers, _ = parse_price(PRICE_PAYLOAD)
+        snapshot = build_snapshot(
+            {"meter_reading": 3},
+            [{"month": "2026-09", "usage": 12, "charge": 35.64, "end_reading": 117}],
+            tiers,
+            2,
+            "2026-09",
+        )
+        self.assertTrue(snapshot["meter_reset_detected"])
+        self.assertEqual(snapshot["annual_usage"], 12)
+        self.assertEqual(snapshot["current_month_usage"], 12)
+
     def test_estimate_rejects_missing_or_negative_usage(self) -> None:
         tiers, _ = parse_price(PRICE_PAYLOAD)
 
